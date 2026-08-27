@@ -117,6 +117,9 @@ def test_phase1_defaults():
     assert cfg.liquidation_distance_pct == 10.0
     assert cfg.margin_reserve_factor == 1.2
     assert cfg.margin_leverage == 1.0        # conservative default (1x)
+    assert cfg.hedge_retry_slips_bps == (20.0, 50.0, 100.0)
+    assert cfg.hedge_retry_interval_sec == 0.5
+    assert cfg.hedge_force_close_timeout_sec == 5.0
 
 
 def test_risk_config_overrides():
@@ -128,6 +131,9 @@ execution:
   margin_leverage: 10.0
   data_staleness_sec: 30.0
   drift_auto_resume_sec: 120.0
+  hedge_retry_slips_bps: [10, 30]
+  hedge_retry_interval_sec: 0.2
+  hedge_force_close_timeout_sec: 3.0
 """)
     assert cfg.risk_loop_sec == 15.0
     assert cfg.liquidation_distance_pct == 5.0
@@ -135,6 +141,9 @@ execution:
     assert cfg.margin_leverage == 10.0
     assert cfg.data_staleness_sec == 30.0
     assert cfg.drift_auto_resume_sec == 120.0
+    assert cfg.hedge_retry_slips_bps == (10.0, 30.0)
+    assert cfg.hedge_retry_interval_sec == 0.2
+    assert cfg.hedge_force_close_timeout_sec == 3.0
 
 
 def test_risk_config_validation():
@@ -146,6 +155,14 @@ def test_risk_config_validation():
                  "margin_reserve_factor")
     expect_error(MINIMAL + "\nexecution:\n  margin_leverage: 0.5\n",
                  "margin_leverage")
+    expect_error(MINIMAL + "\nexecution:\n  hedge_retry_slips_bps: []\n",
+                 "hedge_retry_slips_bps")
+    expect_error(MINIMAL + "\nexecution:\n  hedge_retry_slips_bps: [20, -5]\n",
+                 "hedge_retry_slips_bps")
+    expect_error(MINIMAL + "\nexecution:\n  hedge_retry_slips_bps: [20, x]\n",
+                 "hedge_retry_slips_bps")
+    expect_error(MINIMAL + "\nexecution:\n  hedge_retry_slips_bps: 20\n",
+                 "hedge_retry_slips_bps")
 
 
 def test_example_config_phase1_values():

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from dotenv import load_dotenv
@@ -117,6 +117,9 @@ class Config:
     settle_timeout_sec: float
     leg_slippage_bps: float
     hedge_slippage_bps: float
+    hedge_retry_slips_bps: Tuple[float, ...]
+    hedge_retry_interval_sec: float
+    hedge_force_close_timeout_sec: float
     net_tolerance_base: float
     max_consecutive_errors: int
     rate_limit_pause_sec: float
@@ -194,6 +197,9 @@ _SCHEMA: Dict[str, Any] = {
         "settle_timeout_sec": float,
         "leg_slippage_bps": float,
         "hedge_slippage_bps": float,
+        "hedge_retry_slips_bps": list,
+        "hedge_retry_interval_sec": float,
+        "hedge_force_close_timeout_sec": float,
         "net_tolerance_base": float,
         "max_consecutive_errors": int,
         "rate_limit_pause_sec": float,
@@ -250,6 +256,14 @@ def _validate(node: Any, schema: Dict[str, Any], path: str = "") -> None:
         elif want is bool:
             if not isinstance(val, bool):
                 raise ConfigError(f"'{here}' must be true/false, got {val!r}")
+        elif want is list:
+            if not isinstance(val, list) or not val:
+                raise ConfigError(f"'{here}' must be a non-empty list of "
+                                  f"numbers, got {val!r}")
+            for item in val:
+                if not isinstance(item, (int, float)) or isinstance(item, bool):
+                    raise ConfigError(f"'{here}' must contain only numbers, "
+                                      f"got {item!r}")
         elif want is str:
             if not isinstance(val, str):
                 raise ConfigError(f"'{here}' must be a string, got {val!r}")
@@ -367,6 +381,13 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
     if margin_lev < 1.0:
         raise ConfigError("execution.margin_leverage must be >= 1.0 / "
                           "杠杆倍数不能小于 1")
+    retry_slips = tuple(
+        float(x) for x in _get(raw, "execution", "hedge_retry_slips_bps",
+                               [20.0, 50.0, 100.0]))
+    if not retry_slips or any(x <= 0 for x in retry_slips):
+        raise ConfigError("execution.hedge_retry_slips_bps must be a "
+                          "non-empty list of positive bps / 对冲重试滑点"
+                          "必须是正数列表")
 
     return Config(
         symbol=symbol,
@@ -386,6 +407,12 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         settle_timeout_sec=float(_get(raw, "execution", "settle_timeout_sec", 5.0)),
         leg_slippage_bps=float(_get(raw, "execution", "leg_slippage_bps", 30.0)),
         hedge_slippage_bps=float(_get(raw, "execution", "hedge_slippage_bps", 20.0)),
+        hedge_retry_slips_bps=retry_slips,
+        hedge_retry_interval_sec=float(_get(raw, "execution",
+                                            "hedge_retry_interval_sec", 0.5)),
+        hedge_force_close_timeout_sec=float(_get(raw, "execution",
+                                                 "hedge_force_close_timeout_sec",
+                                                 5.0)),
         net_tolerance_base=float(_get(raw, "execution", "net_tolerance_base", 0.001)),
         max_consecutive_errors=int(_get(raw, "execution", "max_consecutive_errors", 3)),
         rate_limit_pause_sec=float(_get(raw, "execution", "rate_limit_pause_sec", 10.0)),

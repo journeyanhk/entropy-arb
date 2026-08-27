@@ -10,6 +10,7 @@
 |--------|----------|------|------|------------|
 | 202608271001 | phase1-risk-hardening | 修复/加固 | ✅已完成 | [链接](2026-08/202608271001_phase1-risk-hardening/) |
 | 202608271034 | review2-fixes | 修复/加固 | ✅已完成 | [链接](2026-08/202608271034_review2-fixes/) |
+| 202608271754 | p0-hedge-bounded-retry | 修复/加固 | ✅已完成 | [链接](2026-08/202608271754_p0-hedge-bounded-retry/) |
 
 ---
 
@@ -19,3 +20,4 @@
 
 - [202608271001_phase1-risk-hardening](2026-08/202608271001_phase1-risk-hardening/) - 一期实盘加固：unresolved 即查即修、强平/保证金风控、漂移哨兵、数据帧新鲜度、Telegram 告警
 - [202608271034_review2-fixes](2026-08/202608271034_review2-fixes/) - 复查修复轮：force 双读确认、强平先停机、drift 减仓钳制、漂移自动恢复、shutdown 窗口、账户缓存
+- [202608271754_p0-hedge-bounded-retry](2026-08/202608271754_p0-hedge-bounded-retry/) - P0-1 裸露敞口有界快速重试：递增滑点、超时对价强平、残留 carry/停机分级

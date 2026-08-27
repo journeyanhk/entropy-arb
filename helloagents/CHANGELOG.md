@@ -7,6 +7,8 @@
 ## [Unreleased]
 
 ### 新增
+- 裸露敞口有界快速重试（review3 P0-1）：`_hedge` 递增滑点重试（20→50→100 bps、0.5 s 间隔）＋`hedge_force_close_timeout_sec`（5 s）超时后对价最后一搏；残留低于可对冲最小量 carry，否则 HALT+告警——单腿失败尾部损失从"未知"变"有界"
+- 新增执行配置键 3 个（hedge_retry_slips_bps 列表类型 / hedge_retry_interval_sec / hedge_force_close_timeout_sec）；schema 新增 list 类型校验
 - 一期修复复查轮（review2 R1–R7，2026-08-27）：
   - R1：force 对账双读确认（间隔 1 s、两次一致才采纳解熔，最多 3 轮；不一致不计 venue-down 惩罚）
   - R2：强平路径先置 `halted` 再 flatten，杜绝平仓与停机之间信号回加仓位

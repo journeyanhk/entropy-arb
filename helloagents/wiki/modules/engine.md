@@ -49,6 +49,9 @@
 - `Engine._margin_ok(v, notional) -> bool` 保证金预检
 - `Engine._flatten_all()` 双边 reduce-only 平仓
 - `Engine._check_drift()` 漂移哨兵单次检查
+- `Engine._hedge()` 有界对冲：递增滑点重试（`hedge_retry_slips_bps` [20,50,100] × `hedge_retry_interval_sec` 0.5s）+ `hedge_force_close_timeout_sec` 5s 超时后对价最后一搏；残留敞口 < 可对冲最小量则 carry，否则 HALT + 告警
+- `Engine._hedge_once(slip) -> bool` 单次 reduce-only 尝试（净敞口实时重算）
+- `Engine._min_hedgeable(sgn) -> float` 最小可对冲量（min_base / min_notional / min_quote 折算）
 
 ## 数据模型
 - `_venue_unresolved_until: Dict[str, float]` unresolved 熔断（force 对账双读一致确认后清除）

@@ -605,15 +605,78 @@ class Engine:
     async def _maybe_hedge(self) -> None:
         net = sum(v.position for v in self.venues.values())
         if abs(net) > self.cfg.net_tolerance_base:
-            await self._hedge(net)
+            await self._hedge()
 
-    async def _hedge(self, net: float) -> None:
-        """Reduce the venue that carries the imbalance back toward net zero
-        (reduce-only taker with hedge_slippage_bps price protection)."""
+    async def _hedge(self) -> None:
+        """Reduce the venue carrying the imbalance back toward net zero with
+        BOUNDED exposure: retry with widening slippage on a short deadline,
+        then force-close at market; if the residual still cannot be
+        flattened, halt + alert. The tail loss of a one-legged fill is
+        capped by hedge_force_close_timeout_sec instead of being "unknown"
+        until the next reconcile cycle."""
         cfg = self.cfg
+        slips = cfg.hedge_retry_slips_bps or (cfg.hedge_slippage_bps,)
+        deadline = time.time() + cfg.hedge_force_close_timeout_sec
+        attempt = 0
+        while True:
+            slip_bps = max(cfg.hedge_slippage_bps,
+                           slips[min(attempt, len(slips) - 1)])
+            attempted = await self._hedge_once(slip_bps / 1e4)
+            net = sum(v.position for v in self.venues.values())
+            if abs(net) <= cfg.net_tolerance_base:
+                return  # flat again
+            if not attempted or time.time() >= deadline:
+                break
+            attempt += 1
+            log.warning("[HEDGE] exposure %+.6g not reduced (attempt %d, "
+                        "slip %.0f bps) — retrying", net, attempt, slip_bps)
+            await asyncio.sleep(cfg.hedge_retry_interval_sec)
+        # deadline hit or no venue to try: one last market-price attempt,
+        # then bound the tail — halt if real exposure remains
+        await self._hedge_once(0.0)
+        residual = sum(v.position for v in self.venues.values())
+        if abs(residual) <= cfg.net_tolerance_base:
+            return
+        if abs(residual) < self._min_hedgeable(1.0 if residual > 0 else -1.0):
+            log.warning("[HEDGE] net %+.6g below hedgeable minimum — "
+                        "carrying (next reconcile retries)", residual)
+            return
+        self.halted = True
+        log.critical("HALTED — net exposure %+.6g could not be flattened "
+                     "within %.0fs; manual action required / 净敞口无法在 "
+                     "%.0fs 内削平，引擎已停机，请人工处理", residual,
+                     cfg.hedge_force_close_timeout_sec,
+                     cfg.hedge_force_close_timeout_sec)
+        await self._notify(f"🚨 净敞口 {residual:+.6g} 未能削平，"
+                           f"引擎已停机，请人工处理")
+
+    def _min_hedgeable(self, sgn: float) -> float:
+        """Smallest qty (base units) a carrying venue can actually hedge —
+        below this, the residual is dust that must be carried until it grows
+        or reconcile catches it."""
+        cfg = self.cfg
+        best = 0.0
+        for v in self.venues.values():
+            if v.position * sgn <= 0:
+                continue
+            ref = v.book.best_bid() if sgn > 0 else v.book.best_ask()
+            if ref is None or ref <= 0:
+                continue
+            best = max(best, v.min_base,
+                       max(cfg.min_order_notional, v.min_quote) / ref)
+        return best
+
+    async def _hedge_once(self, slip: float) -> bool:
+        """Single reduce-only attempt on the venue carrying the imbalance
+        (net recomputed from current positions). Returns True when an order
+        was actually sent (regardless of fill); False when no venue was
+        usable (blind/down/fused/locked/dust)."""
+        cfg = self.cfg
+        net = sum(v.position for v in self.venues.values())
+        if abs(net) <= cfg.net_tolerance_base:
+            return False
         is_sell = net > 0
         sgn = 1.0 if net > 0 else -1.0
-        slip = cfg.hedge_slippage_bps / 1e4
         for v in sorted(self.venues.values(),
                         key=lambda x: (self._venue_limited(x), -x.position * sgn)):
             if v.position * sgn <= 0:
@@ -673,9 +736,8 @@ class Engine:
                 v.last_traded_ts = time.time()
             finally:
                 lk.release()
-            return
-        log.warning("[HEDGE] net %+.6g below hedgeable minimum — carrying "
-                    "(next reconcile retries)", net)
+            return True
+        return False
 
     # --------------------------------------------------- reconcile / status
 

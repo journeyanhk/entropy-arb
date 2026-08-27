@@ -37,10 +37,18 @@ class StubVenue:
         self.cap_usd, self.fee_bps = cap, fee
         self.size_decimals, self.min_base, self.min_quote = 4, 1e-4, 10.0
         self.position, self.cash = 0.0, 0.0
+        self.volume_usd = 0.0
         self.orders_per_min = 30
         self.last_traded_ts = 0.0
         self.free = None
         self.book = OrderBook()
+
+    def px_round(self, px, round_up):
+        f = 10 ** self.size_decimals
+        import math
+        v = math.ceil(px * f - 1e-9) / f if round_up else \
+            math.floor(px * f + 1e-9) / f
+        return round(v, 8)
 
     def ready_to_trade(self):
         return True
@@ -394,6 +402,66 @@ def test_liquidation_halts_before_flatten():
     asyncio.run(eng._check_liquidation())
     assert eng.halted
     assert order == [("flatten", True)]   # halted was set BEFORE flattening
+
+
+def _hedge_engine():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.0, 100.02)
+    eng.hedge.set_book(99.99, 100.01)
+    eng.entropy.position = 0.3            # +0.3 long entropy
+    eng.hedge.position = -0.1             # net +0.2 -> reduce entropy
+    eng.cfg.hedge_force_close_timeout_sec = 2.0
+    eng.cfg.hedge_retry_interval_sec = 0.01
+    return eng
+
+
+def test_hedge_retries_with_widening_slip():
+    eng = _hedge_engine()
+    calls = []
+
+    async def fake_send(is_buy, qty, limit_px, reduce_only):
+        calls.append((is_buy, qty, limit_px))
+        if len(calls) == 1:
+            return {"status": "send-failed", "filled_base": 0.0,
+                    "avg_px": None, "err": "network", "unresolved": False}
+        return {"status": "filled", "filled_base": qty,
+                "avg_px": 100.0, "err": None, "unresolved": False}
+
+    eng.entropy.send_taker = fake_send
+    asyncio.run(eng._hedge())
+    assert len(calls) == 2                       # first failed, second ok
+    assert calls[1][2] < calls[0][2]             # wider slip -> lower sell limit
+    assert not eng.halted
+    assert eng.entropy.position < 0.2            # reduced
+    assert eng.hedges == 2
+
+
+def test_hedge_force_close_halts_after_timeout():
+    eng = _hedge_engine()
+    calls = []
+
+    async def fake_send(is_buy, qty, limit_px, reduce_only):
+        calls.append((is_buy, qty, limit_px))
+        return {"status": "send-failed", "filled_base": 0.0,
+                "avg_px": None, "err": "network", "unresolved": False}
+
+    eng.entropy.send_taker = fake_send
+    asyncio.run(eng._hedge())
+    assert eng.halted                          # exposure could not be bounded
+    assert len(calls) >= 3                     # retries + market-price last shot
+    assert eng.entropy.position == 0.3         # nothing filled
+
+
+def test_hedge_small_residual_carries_not_halts():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.0, 100.02)
+    eng.hedge.set_book(99.99, 100.01)
+    eng.entropy.position = 0.001               # ~$0.1 residual: below min
+    eng.hedge.position = -0.0
+    eng.cfg.hedge_force_close_timeout_sec = 0.05
+    eng.cfg.hedge_retry_interval_sec = 0.01
+    asyncio.run(eng._hedge())
+    assert not eng.halted                      # dust carries, no false halt
 
 
 def test_status_loop_log_format(capsys):
