@@ -97,7 +97,9 @@ execution:
   # ---- 强平/保证金风控 (P0-2) ----
   risk_loop_sec: 30.0         # liquidation-distance check cadence / 强平距离检查周期
   liquidation_distance_pct: 10.0  # flatten+halt when this close to liq / 距强平价阈值
-  margin_reserve_factor: 1.2  # skip if free < notional × this / 保证金预检系数
+  margin_reserve_factor: 1.2  # margin headroom × notional/leverage / 保证金缓冲系数
+  margin_leverage: 10         # YOUR actual venue leverage (1x default) / 你的实际杠杆倍数（默认按 1x）
+                              # pre-check demands free >= notional/leverage × reserve / 预检按名义÷杠杆×系数校验
 
 # ================== DATA RECORDER / 数据采集 ===============================
 # Always-on while the bot runs: samples both real order books 1/sec and

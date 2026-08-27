@@ -116,6 +116,7 @@ def test_phase1_defaults():
     assert cfg.risk_loop_sec == 30.0
     assert cfg.liquidation_distance_pct == 10.0
     assert cfg.margin_reserve_factor == 1.2
+    assert cfg.margin_leverage == 1.0        # conservative default (1x)
 
 
 def test_risk_config_overrides():
@@ -124,12 +125,14 @@ execution:
   risk_loop_sec: 15.0
   liquidation_distance_pct: 5.0
   margin_reserve_factor: 2.0
+  margin_leverage: 10.0
   data_staleness_sec: 30.0
   drift_auto_resume_sec: 120.0
 """)
     assert cfg.risk_loop_sec == 15.0
     assert cfg.liquidation_distance_pct == 5.0
     assert cfg.margin_reserve_factor == 2.0
+    assert cfg.margin_leverage == 10.0
     assert cfg.data_staleness_sec == 30.0
     assert cfg.drift_auto_resume_sec == 120.0
 
@@ -141,6 +144,8 @@ def test_risk_config_validation():
                  "liquidation_distance_pct")
     expect_error(MINIMAL + "\nexecution:\n  margin_reserve_factor: 0.5\n",
                  "margin_reserve_factor")
+    expect_error(MINIMAL + "\nexecution:\n  margin_leverage: 0.5\n",
+                 "margin_leverage")
 
 
 def test_example_config_phase1_values():

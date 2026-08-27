@@ -134,6 +134,7 @@ class Config:
     risk_loop_sec: float
     liquidation_distance_pct: float
     margin_reserve_factor: float
+    margin_leverage: float
     # recorder
     recorder_enabled: bool
     recorder_csv: str
@@ -209,6 +210,7 @@ _SCHEMA: Dict[str, Any] = {
         "risk_loop_sec": float,
         "liquidation_distance_pct": float,
         "margin_reserve_factor": float,
+        "margin_leverage": float,
     },
     "recorder": {
         "enabled": bool,
@@ -361,6 +363,10 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
     if margin_factor < 1.0:
         raise ConfigError("execution.margin_reserve_factor must be >= 1.0 "
                           "(margin headroom can never be below notional)")
+    margin_lev = float(_get(raw, "execution", "margin_leverage", 1.0))
+    if margin_lev < 1.0:
+        raise ConfigError("execution.margin_leverage must be >= 1.0 / "
+                          "杠杆倍数不能小于 1")
 
     return Config(
         symbol=symbol,
@@ -397,6 +403,7 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         risk_loop_sec=float(_get(raw, "execution", "risk_loop_sec", 30.0)),
         liquidation_distance_pct=liq_pct,
         margin_reserve_factor=margin_factor,
+        margin_leverage=margin_lev,
         recorder_enabled=bool(_get(raw, "recorder", "enabled", True)),
         recorder_csv=_get(raw, "recorder", "csv", "logs/minutes.csv"),
         log_level=str(_get(raw, "logging", "level", "INFO")).upper(),

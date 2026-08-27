@@ -166,6 +166,23 @@ def test_margin_skip_logs_venue_and_numbers(caplog):
                for r in caplog.records)
 
 
+def test_margin_need_respects_leverage():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    eng.entropy.free = eng.hedge.free = 25.0
+    eng.cfg.max_order_notional = 200.0
+    eng.cfg.take_fraction = 1.0
+    # $200 notional at 10x ties up $20 × 1.2 = $24 — a $25 free balance passes
+    eng.cfg.margin_leverage = 10.0
+    approx(eng._margin_need(200.0), 24.0)
+    assert run_scan(eng) is not None
+    # same notional at 1x needs $240: $25 free must block
+    eng.cfg.margin_leverage = 1.0
+    approx(eng._margin_need(200.0), 240.0)
+    assert run_scan(eng) is None
+
+
 def test_scan_fires_with_sufficient_margin():
     eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
     eng.entropy.set_book(100.14, 100.16)

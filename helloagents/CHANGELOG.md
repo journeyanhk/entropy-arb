@@ -23,6 +23,7 @@
 - 强平竞态（先平仓后停机）、force 解熔竞态（单次读数）、drift 减仓穿零、误导性漂移日志
 - `_status_loop` 状态行日志占位符与参数不匹配（DRIFT 标记缺 `%s`，运行时报 `not all arguments converted`）；新增静态守卫测试防同类回归
 - 保证金预检跳过日志补充诊断信息（venue 名 + free/need 数值），便于定位可用余额不足的根因
+- 保证金预检按实际杠杆计算所需保证金（`notional / margin_leverage × margin_reserve_factor`，默认 1x）；新增 `margin_leverage` 配置键（默认 1.0，>0 校验）——此前按 1x 假设会把 10x 账户的可用余额过度拦截 12 倍
 
 ### 新增
 - 一期实盘加固（2026-08-27）：

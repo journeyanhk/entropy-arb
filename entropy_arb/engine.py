@@ -463,7 +463,7 @@ class Engine:
             if not (m_buy and m_sell):
                 detail = " | ".join(
                     f"{v.name} free=${(v.free if v.free is not None else float('nan')):.2f}"
-                    f" need=${n * self.cfg.margin_reserve_factor:.2f}"
+                    f" need=${self._margin_need(n):.2f}"
                     for v, n, ok in ((buy, plan.buy_notional, m_buy),
                                      (sell, plan.sell_notional, m_sell))
                     if not ok)
@@ -474,14 +474,22 @@ class Engine:
                 best = (buy, sell, plan)
         return best
 
+    def _margin_need(self, notional: float) -> float:
+        """Margin an order actually consumes at the configured leverage,
+        times the reserve factor (1x leverage assumed unless config says
+        otherwise — a 10x account only ties up notional/10, and a 1x
+        assumption would block it even with plenty of buying power)."""
+        lev = max(self.cfg.margin_leverage, 1.0)
+        return (notional / lev) * self.cfg.margin_reserve_factor
+
     def _margin_ok(self, v, notional: float) -> bool:
-        """True when the venue's available balance covers notional × reserve
-        factor (1x leverage assumption). Unknown balance (poll not ready)
-        does not block."""
+        """True when the venue's available balance covers the margin the
+        order needs (_margin_need). Unknown balance (poll not ready) does
+        not block."""
         free = getattr(v, "free", None)
         if free is None:
             return True
-        return free >= notional * self.cfg.margin_reserve_factor
+        return free >= self._margin_need(notional)
 
     # ------------------------------------------------------------- execution
 
