@@ -222,10 +222,12 @@ class LighterVenue:
         self.signer = signer
         log.info("[%s] signer ready (account %d)", self.name, c.account_index)
 
-    def start_tasks(self, stop: asyncio.Event, notify, live: bool) -> list:
+    def start_tasks(self, stop: asyncio.Event, notify, live: bool,
+                    data_staleness_sec: float = 60.0) -> list:
         tasks = [asyncio.create_task(
             LighterBookFeed(self.name, self.profile.ws_url, self.market_id,
-                            self.book, notify).run(stop),
+                            self.book, notify,
+                            data_staleness_sec=data_staleness_sec).run(stop),
             name=f"book-{self.key}")]
         if live:
             self.orders_feed = AccountOrdersFeed(
@@ -267,6 +269,51 @@ class LighterVenue:
     def _next_coi(self) -> int:
         self._coi += 1
         return self._coi
+
+    async def _query_order(self, coi: int) -> Optional[dict]:
+        """REST query of one order's terminal state by client_order_index
+        (GET /api/v1/accountOrders with an auth token). Returns
+        {status, filled_base, avg_px} for a terminal order, or None when the
+        order is still open / not found / the query itself fails."""
+        if self.signer is None:
+            return None
+        auth, err = self.signer.create_auth_token_with_expiry()
+        if err is not None:
+            log.warning("[%s] auth token for order query failed: %s",
+                        self.name, err)
+            return None
+        params = {"client_order_indexes": str(coi)}
+        if (self.conf.lighter_creds is not None
+                and self.conf.lighter_creds.account_index is not None):
+            params["account_index"] = str(self.conf.lighter_creds.account_index)
+        try:
+            async with self.session.get(
+                    self.profile.api_url + "/api/v1/accountOrders",
+                    params=params, headers={"authorization": auth},
+                    timeout=aiohttp.ClientTimeout(total=REST_TIMEOUT)) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
+        except Exception as e:
+            log.warning("[%s] order query failed: %r", self.name, e)
+            return None
+        for o in (data or {}).get("orders") or []:
+            try:
+                if int(o.get("client_order_index")) != coi:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            status = str(o.get("status", ""))
+            if status in OPEN_STATUSES:
+                return None  # still in flight: not terminal
+            try:
+                fb = float(o.get("filled_base_amount") or 0.0)
+                fq = float(o.get("filled_quote_amount") or 0.0)
+            except (TypeError, ValueError):
+                fb = fq = 0.0
+            return {"status": status, "filled_base": fb,
+                    "avg_px": (fq / fb) if fb > 0 else None}
+        return None
 
     async def send_taker(self, *, is_buy: bool, qty: float, limit_px: float,
                          reduce_only: bool = False) -> dict:
@@ -315,8 +362,19 @@ class LighterVenue:
                     "avg_px": info.get("avg_px"), "err": None, "unresolved": False}
         except asyncio.TimeoutError:
             self.orders_feed.unwatch(coi)
-            log.warning("[%s] no settle confirmation for coi %d in %.1fs",
-                        self.name, coi, self.settle_timeout)
+            log.warning("[%s] no settle confirmation for coi %d in %.1fs — "
+                        "querying REST state", self.name, coi,
+                        self.settle_timeout)
+            # the ws settlement may still be in flight or the stream may be
+            # down; actively query the order's terminal state instead of
+            # declaring it unresolved up front
+            for attempt in range(3):
+                info = await self._query_order(coi)
+                if info is not None:
+                    log.info("[%s] REST query resolved coi %d: %s",
+                             self.name, coi, info["status"])
+                    return {**info, "err": None, "unresolved": False}
+                await asyncio.sleep(1.0)
             return {"status": "timeout", "filled_base": 0.0, "avg_px": None,
                     "err": None, "unresolved": True}
 
@@ -348,6 +406,32 @@ class LighterVenue:
             if int(p.get("market_id", -1)) == self.market_id:
                 return float(p.get("sign") or 1.0) * float(p.get("position") or 0.0)
         return 0.0
+
+    async def fetch_risk(self):
+        """(mark_price, liquidation_price) for this market, or None. Mark is
+        derived from position_value/position (or the local book mid as a
+        fallback); liquidation_price comes straight from the positions row."""
+        acct = await self._account()
+        if acct is None:
+            return None
+        for p in acct.get("positions") or []:
+            if int(p.get("market_id", -1)) != self.market_id:
+                continue
+            try:
+                pos = float(p.get("position") or 0.0)
+                if pos == 0.0:
+                    continue
+                liq = float(p.get("liquidation_price") or 0.0)
+                pv = float(p.get("position_value") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if liq <= 0:
+                continue
+            mark = abs(pv / pos) if pv else self.book.mid()
+            if mark is None or mark <= 0:
+                continue
+            return mark, liq
+        return None
 
     async def close(self) -> None:
         if self.signer is not None:

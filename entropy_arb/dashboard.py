@@ -41,6 +41,7 @@ _ZH = {
     " LIVE ": " 实盘 ",
     " RECORD-ONLY ": " 仅采集 ",
     " HALTED ": " 已停机 ",
+    " DRIFT ": " 漂移 ",
     " VENUE DOWN ": " 交易所故障 ",
     " {n} STALE ": " {n} 路行情超时 ",
     " RATE-LTD ": " 限频中 ",
@@ -203,10 +204,13 @@ class Dashboard:
             if eng.record_only \
             else Text(self._t(" LIVE "), style="white on dark_green")
         stale = sum(1 for v in eng.venues.values()
-                    if not v.book.is_fresh(cfg.staleness_sec))
+                    if not v.book.is_fresh(cfg.staleness_sec,
+                                           cfg.data_staleness_sec))
         limited = sum(1 for v in eng.venues.values() if eng._venue_limited(v))
         if eng.halted:
             state = Text(self._t(" HALTED "), style="bold white on red")
+        elif eng._drift_halted:
+            state = Text(self._t(" DRIFT "), style="bold white on yellow")
         elif eng._venue_down:
             state = Text(self._t(" VENUE DOWN "), style="bold white on red")
         elif stale:
@@ -247,7 +251,7 @@ class Dashboard:
         vol_total = 0.0
         for v in eng.venues.values():
             bb, ba, m = v.book.best_bid(), v.book.best_ask(), v.book.mid()
-            fresh = v.book.is_fresh(cfg.staleness_sec)
+            fresh = v.book.is_fresh(cfg.staleness_sec, cfg.data_staleness_sec)
             name = Text(v.name, style="bold")
             if v.key in eng._venue_down:
                 name.append(self._t(" DOWN"), style="bold white on red")

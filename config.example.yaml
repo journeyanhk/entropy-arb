@@ -35,27 +35,30 @@
 # logs/minutes.csv，再运行 python3 tools/analyze.py 获取建议值。
 # 两个方向的门槛都已扣除手续费（引擎会在此之上另加手续费），因此一次完整往返
 # 扣费后净赚 >= upper + lower bps。
+# 绝不允许用 0.0 上实盘——必须先采集 >=1 个完整美股交易日的数据定中枢。
 thresholds:
   midline_bps: 0.0     # persistent premium center / 溢价长期中枢
-  upper_bps: 4.0       # entry above midline: sell entropy / 中枢上方入场带宽
-  lower_bps: 4.0       # entry below midline: buy entropy / 中枢下方入场带宽
+  upper_bps: 5.0       # entry above midline: sell entropy / 中枢上方入场带宽
+  lower_bps: 5.0       # entry below midline: buy entropy / 中枢下方入场带宽
 
 # ======================== VENUES / 交易所参数 ==============================
+# 一期 50U/边 参考配置：持仓帽 40U（约 0.8 倍杠杆，给保证金留缓冲）、
+# 单笔 20U。加到 40U 之前请先完成 P0-2 强平/保证金风控。
 entropy:
   dex: io                    # Entropy's dex name on Hyperliquid / Entropy 的 dex 名
   taker_fee_bps: 0.0         # taker fee / 吃单手续费
-  max_position_usd: 1000     # position cap / 持仓上限（美元）
-  max_orders_per_min: 120    # order-send budget, sliding 60s / 每分钟下单预算
+  max_position_usd: 40       # position cap / 持仓上限（美元）
+  max_orders_per_min: 60     # order-send budget, sliding 60s / 每分钟下单预算
 
 hedge:
   taker_fee_bps: 0.0         # Lighter venues: 0; tradexyz: ~1.0
-  max_position_usd: 1000
-  max_orders_per_min: 30     # Lighter's ceiling is ~40/min / Lighter 上限约 40/分钟
+  max_position_usd: 40
+  max_orders_per_min: 24     # Lighter's ceiling is ~40/min; keep hedge/probe headroom / 留出对冲/探测余量
 
 # ========================= SIZING / 下单规模 ===============================
 sizing:
   take_fraction: 0.5           # fraction of crossable depth to take / 吃掉可套利深度的比例
-  max_order_notional_usd: 500  # per-slice cap / 单笔名义上限
+  max_order_notional_usd: 20   # per-slice cap / 单笔名义上限（帽 40 → 每方向最多 2 片）
   min_order_notional_usd: 10   # skip dust / 低于此名义不下单
 
 # ==================== INVENTORY LADDER / 库存阶梯 ==========================
@@ -64,24 +67,36 @@ sizing:
 # Slows down one-sided accumulation without hard-stopping the strategy.
 # 当某交易所持仓超过上限的 floor_frac 后，同方向继续加仓需额外溢价，线性增加到
 # 满仓时的 scale_bps。避免单边持仓快速堆满。 scale_bps: 0 disables / 0 为关闭。
+# 小资金下不要设 0——默认 0 会从第一笔就开始加价，过度抑制。
 inventory:
   scale_bps: 10.0
-  floor_frac: 0
+  floor_frac: 0.5
 
 # ======================= EXECUTION / 执行参数 ==============================
 execution:
-  premium_persist_sec: 0     # edge must persist this long before firing / 信号需持续时间
-  cooldown_sec: 0.0            # min gap between executions / 两次执行的最小间隔
-  settle_timeout_sec: 10.0      # wait for fill confirmation / 等待成交确认
-  leg_slippage_bps: 50.0       # taker limit protection per leg / 每腿滑点保护
-  hedge_slippage_bps: 20.0     # price protection on delta hedges / 对冲滑点保护
-  net_tolerance_base: 0.001    # max tolerated net delta (base units) / 允许的净敞口
-  max_consecutive_errors: 3    # halt after N straight failures / 连续失败 N 次后停机
-  rate_limit_pause_sec: 10.0   # pause a 429'd venue this long / 被限频后的暂停时长
-  staleness_sec: 10.0          # a feed older than this is stale / 行情超时判定
-  reconcile_sec: 15.0          # on-chain position sync cadence / 链上持仓核对周期
-  venue_probe_sec: 30.0        # probe cadence for a down venue / 故障交易所探测周期
-  http_keepalive_sec: 10.0     # keep order-path TLS warm; 0 = off / 订单链路保活
+  premium_persist_sec: 0.5    # edge must persist this long before firing / 信号需持续时间（幻影过滤）
+  cooldown_sec: 1.0           # min gap between executions / 两次执行的最小间隔
+  settle_timeout_sec: 10.0    # wait for fill confirmation / 等待成交确认
+  leg_slippage_bps: 30.0      # taker limit protection per leg / 每腿滑点保护
+  hedge_slippage_bps: 20.0    # price protection on delta hedges / 对冲滑点保护
+  net_tolerance_base: 0.001   # max tolerated net delta (base units) / 允许的净敞口
+  max_consecutive_errors: 3   # halt after N straight failures / 连续失败 N 次后停机
+  rate_limit_pause_sec: 10.0  # pause a 429'd venue this long / 被限频后的暂停时长
+  staleness_sec: 2.5          # a feed older than this is stale / 行情超时判定（taker 套利要收紧）
+  reconcile_sec: 10.0         # on-chain position sync cadence / 链上持仓核对周期
+  venue_probe_sec: 30.0       # probe cadence for a down venue / 故障交易所探测周期
+  http_keepalive_sec: 10.0    # keep order-path TLS warm; 0 = off / 订单链路保活
+  # ---- 数据帧级新鲜度 (P1-5) ----
+  data_staleness_sec: 60.0    # no book DATA frame this long => blind / 盘口数据帧超时判盲
+  # ---- 中枢漂移哨兵 (P1-3) ----
+  drift_window_sec: 1800.0    # trailing window for the premium mean / 均值窗口（30 分钟）
+  drift_check_sec: 60.0       # how often the mean is rechecked / 均值检查周期
+  drift_halt_sec: 600.0       # sustained breach before halting / 持续超限才停机（10 分钟）
+  drift_band_factor: 1.0      # breach limit = (upper+lower)/2 × this / 超限倍数
+  # ---- 强平/保证金风控 (P0-2) ----
+  risk_loop_sec: 30.0         # liquidation-distance check cadence / 强平距离检查周期
+  liquidation_distance_pct: 10.0  # flatten+halt when this close to liq / 距强平价阈值
+  margin_reserve_factor: 1.2  # skip if free < notional × this / 保证金预检系数
 
 # ================== DATA RECORDER / 数据采集 ===============================
 # Always-on while the bot runs: samples both real order books 1/sec and

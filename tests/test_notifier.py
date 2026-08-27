@@ -1,0 +1,131 @@
+"""Notifier: enable flag, queueing, drop-on-full; Lighter REST order query.
+
+Run:  python3 -m pytest tests/  (or  python3 tests/test_notifier.py)
+"""
+import asyncio
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from entropy_arb.config import (LighterCreds, LighterProfile, VenueConf)  # noqa: E402
+from entropy_arb.notifier import Notifier  # noqa: E402
+from entropy_arb.venue_lighter import LighterVenue  # noqa: E402
+
+
+def test_disabled_without_credentials():
+    n = Notifier(None, None)
+    assert not n.enabled
+    n.send("anything")          # no-op, no queue, no exception
+
+
+def test_enabled_flag_and_queue():
+    n = Notifier("tok", "123")
+    assert n.enabled
+    n.send("hi")
+    assert n._queue.qsize() == 1
+
+
+def test_queue_full_drops():
+    n = Notifier("tok", "123", max_queue=2)
+    n.send("1")
+    n.send("2")
+    n.send("3")
+    assert n._queue.qsize() == 2
+
+
+class FakeResp:
+    status = 200
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+
+class FakeCtx:
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def __aenter__(self):
+        return FakeResp(self._payload)
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class FakeSession:
+    def __init__(self, payload):
+        self._payload = payload
+        self.last_params = None
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.last_params = params
+        return FakeCtx(self._payload)
+
+
+class FakeSigner:
+    def create_auth_token_with_expiry(self):
+        return "auth-token", None
+
+
+def make_venue(session):
+    conf = VenueConf(key="hedge", kind="lighter", label="RH", symbol="SNDK",
+                     fee_bps=0.0, cap_usd=40.0, orders_per_min=24,
+                     lighter_profile=LighterProfile("rh", "https://api.rh.lighter.xyz",
+                                                    "wss://api.rh.lighter.xyz/stream",
+                                                    466324),
+                     lighter_creds=LighterCreds(account_index=7,
+                                                api_key_index=2,
+                                                api_private_key="k"))
+    v = LighterVenue(conf, None, 5.0)
+    v.session = session
+    v.signer = FakeSigner()
+    return v
+
+
+FILLED = {"code": 0, "orders": [
+    {"client_order_index": 5, "status": "filled",
+     "filled_base_amount": "2.5", "filled_quote_amount": "250.0"}]}
+
+OPEN = {"code": 0, "orders": [
+    {"client_order_index": 5, "status": "in-progress",
+     "filled_base_amount": "0", "filled_quote_amount": "0"}]}
+
+EMPTY = {"code": 0, "orders": []}
+
+
+def test_query_order_resolves_terminal():
+    s = FakeSession(FILLED)
+    v = make_venue(s)
+    info = asyncio.run(v._query_order(5))
+    assert info == {"status": "filled", "filled_base": 2.5, "avg_px": 100.0}
+    assert s.last_params == {"client_order_indexes": "5", "account_index": "7"}
+
+
+def test_query_order_open_is_not_terminal():
+    v = make_venue(FakeSession(OPEN))
+    assert asyncio.run(v._query_order(5)) is None
+
+
+def test_query_order_not_found():
+    v = make_venue(FakeSession(EMPTY))
+    assert asyncio.run(v._query_order(999)) is None
+
+
+def test_query_order_bad_status_ignored():
+    payload = {"code": 0, "orders": [
+        {"client_order_index": 5, "status": "filled",
+         "filled_base_amount": "1.0", "filled_quote_amount": "bad"}]}
+    v = make_venue(FakeSession(payload))
+    info = asyncio.run(v._query_order(5))
+    assert info["status"] == "filled" and info["filled_base"] == 0.0
+    assert info["avg_px"] is None
+
+
+if __name__ == "__main__":
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_"):
+            fn()
+            print(f"{name:40s} OK")

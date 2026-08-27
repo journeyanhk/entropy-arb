@@ -4,6 +4,7 @@ Run:  python3 -m pytest tests/  (or  python3 tests/test_book.py)
 """
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -89,6 +90,35 @@ def test_lighter_diff_maintenance():
                      "asks": [{"price": "100.2", "size": "3"}]},
                     snapshot=True)
     assert b.best_bid() == 98.9 and b.best_ask() == 100.2
+
+
+def test_is_fresh_connection_based():
+    b = make_book(bids=[(99.9, 1)], asks=[(100.0, 1)])
+    assert b.is_fresh(10.0)
+    b.touch()          # heartbeat only: no data frame
+    assert b.is_fresh(10.0)
+    b.ready = False    # no book at all
+    assert not b.is_fresh(10.0)
+
+
+def test_is_fresh_data_staleness():
+    b = make_book(bids=[(99.9, 1)], asks=[(100.0, 1)])
+    assert b.is_fresh(10.0, data_max_age_sec=60.0)
+    # live connection, but the book data itself is stale (e.g. stock perps
+    # outside regular hours): connection-fresh is not data-fresh
+    b.last_update_ts = time.time() - 120.0
+    b.touch()
+    assert b.is_fresh(10.0)                       # old behavior: still fresh
+    assert not b.is_fresh(10.0, data_max_age_sec=60.0)  # now: blind
+
+
+def test_is_fresh_data_after_new_frame():
+    b = make_book(bids=[(99.9, 1)], asks=[(100.0, 1)])
+    b.last_update_ts = time.time() - 120.0
+    b.touch()
+    assert not b.is_fresh(10.0, data_max_age_sec=60.0)
+    b.apply_hl([[{"px": "99.9", "sz": "2"}], [{"px": "100.0", "sz": "2"}]])
+    assert b.is_fresh(10.0, data_max_age_sec=60.0)  # a diff/snapshot revives
 
 
 if __name__ == "__main__":

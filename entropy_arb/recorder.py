@@ -100,11 +100,13 @@ class _MinuteAgg:
 
 class MinuteRecorder:
     def __init__(self, path: str, entropy_book: OrderBook, hedge_book: OrderBook,
-                 staleness_sec: float, interval_sec: float = 1.0) -> None:
+                 staleness_sec: float, interval_sec: float = 1.0,
+                 data_staleness_sec: float = 60.0) -> None:
         self.path = path
         self.entropy_book = entropy_book
         self.hedge_book = hedge_book
         self.staleness_sec = staleness_sec
+        self.data_staleness_sec = data_staleness_sec
         self.interval_sec = interval_sec
         self.rows_written = 0
         self._agg: Optional[_MinuteAgg] = None
@@ -147,8 +149,10 @@ class MinuteRecorder:
         minute = int(now // 60)
         if self._agg is not None and self._agg.minute != minute:
             self._flush_agg()
-        if not (self.entropy_book.is_fresh(self.staleness_sec)
-                and self.hedge_book.is_fresh(self.staleness_sec)):
+        if not (self.entropy_book.is_fresh(self.staleness_sec,
+                                        self.data_staleness_sec)
+                and self.hedge_book.is_fresh(self.staleness_sec,
+                                             self.data_staleness_sec)):
             return
         e_bid, e_ask = self.entropy_book.best_bid(), self.entropy_book.best_ask()
         h_bid, h_ask = self.hedge_book.best_bid(), self.hedge_book.best_ask()

@@ -74,9 +74,21 @@ class OrderBook:
             return None
         return (max(self.bids) + min(self.asks)) / 2.0
 
-    def is_fresh(self, max_age_sec: float) -> bool:
-        return self.ready and bool(self.bids) and bool(self.asks) and (
-            time.time() - self.alive_ts <= max_age_sec)
+    def is_fresh(self, max_age_sec: float,
+                 data_max_age_sec: Optional[float] = None) -> bool:
+        """Fresh = connected (alive_ts within max_age_sec) AND, when
+        data_max_age_sec is given, actually receiving book data frames
+        (last_update_ts within data_max_age_sec). A live-but-quiet feed
+        (e.g. stock perps outside regular hours) can be connection-fresh yet
+        data-blind: trades must not fire off a stale book."""
+        if not (self.ready and self.bids and self.asks):
+            return False
+        if time.time() - self.alive_ts > max_age_sec:
+            return False
+        if data_max_age_sec is not None and \
+                time.time() - self.last_update_ts > data_max_age_sec:
+            return False
+        return True
 
 
 def floor_step(x: float, step: float) -> float:

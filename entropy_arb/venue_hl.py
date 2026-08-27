@@ -144,10 +144,11 @@ class HLVenue:
             log.info("[%s]/[%s] same signer — shared nonce allocator",
                      self.name, other.name)
 
-    def start_tasks(self, stop: asyncio.Event, notify, live: bool) -> list:
+    def start_tasks(self, stop: asyncio.Event, notify, live: bool,
+                    data_staleness_sec: float = 60.0) -> list:
         return [asyncio.create_task(
             HLBookFeed(self.name, self.ws_url, self.coin, self.book,
-                       notify).run(stop),
+                       notify, data_staleness_sec=data_staleness_sec).run(stop),
             name=f"book-{self.key}")]
 
     def ready_to_trade(self) -> bool:
@@ -330,6 +331,23 @@ class HLVenue:
             if pos.get("coin") == self.coin:
                 return float(pos.get("szi") or 0.0)
         return 0.0
+
+    async def fetch_risk(self):
+        """(mark_price, liquidation_price) for the traded coin, or None when
+        there is no position / the exchange does not report a mark."""
+        addr = self._query_address()
+        assert addr is not None
+        st = await self._info({"type": "clearinghouseState", "user": addr,
+                               "dex": self.conf.hl_dex})
+        for ap in st.get("assetPositions") or []:
+            pos = ap.get("position") or {}
+            if pos.get("coin") != self.coin:
+                continue
+            mark = pos.get("markPx")
+            if not mark:
+                return None
+            return float(mark), float(pos.get("liquidationPx") or 0.0)
+        return None
 
     async def close(self) -> None:
         pass

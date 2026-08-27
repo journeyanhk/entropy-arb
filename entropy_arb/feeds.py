@@ -11,12 +11,16 @@ HLBookFeed: the official Hyperliquid websocket (wss://api.hyperliquid.xyz/ws)
 
 Both touch the book on any inbound frame (connection-based freshness: a quiet
 market is not stale, only a dead feed is) and reconnect with backoff.
+Data-frame staleness is handled separately: a live-but-quiet connection that
+stops delivering order-book data within data_staleness_sec is force-closed by
+_data_watch so the reconnect path resubscribes and gets a fresh snapshot.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import time
 from typing import Callable, Optional
 
 try:
@@ -27,6 +31,33 @@ except ImportError:
 from .book import OrderBook
 
 log = logging.getLogger("feeds")
+
+DATA_WATCH_CHECK_SEC = 5.0
+
+
+async def _data_watch(name: str, book: OrderBook, ws,
+                      data_staleness_sec: float) -> None:
+    """Close the connection when no book data frame arrives within
+    data_staleness_sec — the outer reconnect loop then reconnects and
+    resubscribes, forcing a fresh snapshot. Connection heartbeats (alive_ts)
+    do NOT count: a live feed can still be data-blind."""
+    check = min(DATA_WATCH_CHECK_SEC, max(data_staleness_sec, 1.0))
+    try:
+        while True:
+            await asyncio.sleep(check)
+            if time.time() - book.last_update_ts > data_staleness_sec:
+                log.warning("[%s] no book data frame for %.0fs — closing "
+                            "feed to force resubscribe", name,
+                            data_staleness_sec)
+                await ws.close()
+                return
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 def _chan_id(channel: str) -> Optional[int]:
@@ -44,12 +75,14 @@ class LighterBookFeed:
     """zkLighter order book for one market over one connection."""
 
     def __init__(self, name: str, ws_url: str, market_id: int, book: OrderBook,
-                 notify: Callable[[], None]) -> None:
+                 notify: Callable[[], None],
+                 data_staleness_sec: float = 60.0) -> None:
         self.name = name
         self.ws_url = ws_url
         self.market_id = market_id
         self.book = book
         self.notify = notify
+        self.data_staleness_sec = data_staleness_sec
         self._nonce: Optional[int] = None
         self._synced = False
 
@@ -100,21 +133,27 @@ class LighterBookFeed:
                     self.book.clear()
                     self._nonce = None
                     self._synced = False
-                    async for raw in ws:
-                        backoff = 1.0
-                        msg = json.loads(raw)
-                        t = msg.get("type")
-                        self.book.touch()
-                        if t == "update/order_book":
-                            await self._handle_book(ws, msg, snapshot=False)
-                        elif t == "subscribed/order_book":
-                            await self._handle_book(ws, msg, snapshot=True)
-                        elif t == "connected":
-                            await self._subscribe(ws)
-                        elif t == "ping":
-                            await ws.send(json.dumps({"type": "pong"}))
-                        if stop.is_set():
-                            break
+                    wtask = asyncio.create_task(
+                        _data_watch(self.name, self.book, ws,
+                                    self.data_staleness_sec))
+                    try:
+                        async for raw in ws:
+                            backoff = 1.0
+                            msg = json.loads(raw)
+                            t = msg.get("type")
+                            self.book.touch()
+                            if t == "update/order_book":
+                                await self._handle_book(ws, msg, snapshot=False)
+                            elif t == "subscribed/order_book":
+                                await self._handle_book(ws, msg, snapshot=True)
+                            elif t == "connected":
+                                await self._subscribe(ws)
+                            elif t == "ping":
+                                await ws.send(json.dumps({"type": "pong"}))
+                            if stop.is_set():
+                                break
+                    finally:
+                        wtask.cancel()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -132,13 +171,15 @@ class HLBookFeed:
     """Official Hyperliquid l2Book consumer for one coin (e.g. 'io:SNDK')."""
 
     def __init__(self, name: str, ws_url: str, coin: str, book: OrderBook,
-                 notify: Callable[[], None], ping_sec: float = 5.0) -> None:
+                 notify: Callable[[], None], ping_sec: float = 5.0,
+                 data_staleness_sec: float = 60.0) -> None:
         self.name = name
         self.ws_url = ws_url
         self.coin = coin
         self.book = book
         self.notify = notify
         self.ping_sec = ping_sec
+        self.data_staleness_sec = data_staleness_sec
         self._snapped = False
 
     def _on_frame(self, msg: dict) -> None:
@@ -181,11 +222,17 @@ class HLBookFeed:
                         "subscription": {"type": "l2Book", "coin": self.coin,
                                          "fast": True}}))
                     ptask = asyncio.create_task(self._pinger(ws))
-                    async for raw in ws:
-                        backoff = 1.0
-                        self._on_frame(json.loads(raw))
-                        if stop.is_set():
-                            break
+                    wtask = asyncio.create_task(
+                        _data_watch(self.name, self.book, ws,
+                                    self.data_staleness_sec))
+                    try:
+                        async for raw in ws:
+                            backoff = 1.0
+                            self._on_frame(json.loads(raw))
+                            if stop.is_set():
+                                break
+                    finally:
+                        wtask.cancel()
             except asyncio.CancelledError:
                 raise
             except Exception as e:

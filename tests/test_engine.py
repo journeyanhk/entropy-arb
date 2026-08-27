@@ -39,6 +39,7 @@ class StubVenue:
         self.position, self.cash = 0.0, 0.0
         self.orders_per_min = 30
         self.last_traded_ts = 0.0
+        self.free = None
         self.book = OrderBook()
 
     def ready_to_trade(self):
@@ -143,6 +144,82 @@ def test_scan_respects_position_caps():
     eng.hedge.position = 100.0
     eng.hedge.cap_usd = 10000.0
     assert run_scan(eng) is None
+
+
+def test_scan_skips_when_free_margin_insufficient():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    eng.entropy.free = 0.0            # no free balance on the sell leg
+    assert run_scan(eng) is None
+
+
+def test_scan_fires_with_sufficient_margin():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    eng.entropy.free = eng.hedge.free = 1e9
+    best = run_scan(eng)
+    assert best is not None
+
+
+def test_drift_halt_only_allows_reducing_direction():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    eng._drift_halted = True
+    eng.entropy.position = 0.0        # flat: no position to reduce
+    assert run_scan(eng) is None
+    eng.entropy.position = 10.0       # long entropy: only sell_entropy reduces
+    eng.hedge.position = -10.0
+    best = run_scan(eng)
+    assert best is not None
+    buy, sell, plan = best
+    assert sell.key == "entropy"      # the adding direction must not fire
+
+
+def test_liq_distance_both_sides():
+    from entropy_arb.engine import liq_distance
+    assert abs(liq_distance(100.0, 90.0) - 0.10) < 1e-12    # long
+    assert abs(liq_distance(100.0, 110.0) - 0.10) < 1e-12   # short
+    assert abs(liq_distance(50.0, 49.0) - 0.02) < 1e-12
+
+
+def test_drift_sentinel_triggers_halt():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.cfg.drift_window_sec = 60.0
+    eng.cfg.drift_check_sec = 1.0
+    eng.cfg.drift_halt_sec = 10.0
+    now = __import__("time").time()
+
+    async def go():
+        # 30 minutes worth of premium far above the midline
+        for i in range(3600):
+            eng._premium_hist.append((now - 1800 + i, 30.0))
+        eng._drift_started = now - 20.0     # sustained breach for 20s
+        eng._last_drift_check = now - 10.0
+        await eng._check_drift()
+        assert eng._drift_halted
+
+    asyncio.run(go())
+
+
+def test_drift_sentinel_disarms_when_premium_returns():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.cfg.drift_window_sec = 60.0
+    eng.cfg.drift_check_sec = 1.0
+    now = __import__("time").time()
+
+    async def go():
+        for i in range(3600):
+            eng._premium_hist.append((now - 1800 + i, 5.0))   # on the midline
+        eng._drift_started = now - 20.0
+        eng._last_drift_check = now - 10.0
+        await eng._check_drift()
+        assert not eng._drift_halted
+        assert eng._drift_started is None
+
+    asyncio.run(go())
 
 
 if __name__ == "__main__":

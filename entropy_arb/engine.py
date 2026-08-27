@@ -26,6 +26,7 @@ import aiohttp
 
 from .book import ArbPlan, floor_step, plan_arb
 from .config import Config
+from .notifier import Notifier
 from .recorder import MinuteRecorder
 from .venue_hl import HLVenue
 from .venue_lighter import LighterVenue
@@ -38,6 +39,13 @@ CSV_HEADER = ["ts", "direction", "buy_venue", "sell_venue", "qty",
               "midline_bps", "inv_add_bps", "ok", "buy_fill", "sell_fill",
               "buy_status", "sell_status", "fill_edge_usd"]
 BALANCE_POLL_SEC = 30.0
+FORCE_RECONCILE_GRACE_SEC = 3.0
+
+
+def liq_distance(mark: float, liq: float) -> float:
+    """Distance from mark to the liquidation price, as a fraction of mark
+    (always positive: liq sits on the loss side of mark)."""
+    return abs(mark - liq) / mark
 
 
 class Engine:
@@ -78,6 +86,9 @@ class Engine:
         self._sends: Dict[str, deque] = {}
         # reactive per-venue throttle: venue key -> excluded until
         self._venue_limited_until: Dict[str, float] = {}
+        # unresolved-outcome fuse: a leg whose fill state is unknown after the
+        # settle window fuses its venue until reconcile confirms chain state
+        self._venue_unresolved_until: Dict[str, float] = {}
         # venue outage tracking: key -> down-since ts; a down venue pauses
         # trading and is probed every venue_probe_sec until it answers
         self._venue_down: Dict[str, float] = {}
@@ -85,6 +96,13 @@ class Engine:
         self._venue_fetch_fails: Dict[str, int] = {}
         # per-execution records for the dashboard (newest last)
         self.recent_trades: deque = deque(maxlen=50)
+        # midline drift sentinel (P1-3): sampled premiums + halt flag
+        self._premium_hist: deque = deque(maxlen=int(cfg.drift_window_sec) + 2)
+        self._drift_started: Optional[float] = None
+        self._last_drift_check = 0.0
+        self._drift_halted = False
+        # telegram alerts (no-op without credentials)
+        self.notifier = Notifier.from_env()
 
     # ------------------------------------------------------------- utilities
 
@@ -103,12 +121,18 @@ class Engine:
         return len(dq) < v.orders_per_min
 
     def _venue_limited(self, v) -> bool:
-        return time.time() < self._venue_limited_until.get(v.key, 0.0)
+        if time.time() < self._venue_limited_until.get(v.key, 0.0):
+            return True
+        return bool(self._venue_unresolved_until.get(v.key, 0.0))
 
     def _mark_limited(self, v) -> None:
         self._venue_limited_until[v.key] = time.time() + self.cfg.rate_limit_pause_sec
         log.warning("[%s] rate limited — trading paused for %.0fs",
                     v.name, self.cfg.rate_limit_pause_sec)
+
+    async def _notify(self, text: str) -> None:
+        if self.notifier.enabled:
+            self.notifier.send(text)
 
     def _record_send(self, v) -> None:
         self._sends.setdefault(v.key, deque()).append(time.time())
@@ -188,10 +212,12 @@ class Engine:
 
         tasks: List[asyncio.Task] = []
         for v in self.venues.values():
-            tasks += v.start_tasks(self.stop, self._update_evt.set, live)
+            tasks += v.start_tasks(self.stop, self._update_evt.set, live,
+                                   data_staleness_sec=cfg.data_staleness_sec)
         if cfg.recorder_enabled or self.record_only:
             self.recorder = MinuteRecorder(cfg.recorder_csv, self.entropy.book,
-                                           self.hedge.book, cfg.staleness_sec)
+                                           self.hedge.book, cfg.staleness_sec,
+                                           data_staleness_sec=cfg.data_staleness_sec)
             tasks.append(asyncio.create_task(self.recorder.run(self.stop),
                                              name="recorder"))
         if not self.record_only:
@@ -201,6 +227,11 @@ class Engine:
                                              name="balances"))
             tasks.append(asyncio.create_task(self._http_keepalive_loop(),
                                              name="keepalive"))
+            tasks.append(asyncio.create_task(self._risk_loop(), name="risk"))
+            tasks.append(asyncio.create_task(self._drift_loop(), name="drift"))
+        if self.notifier.enabled:
+            tasks.append(asyncio.create_task(self.notifier.run(self.session),
+                                             name="notify"))
         tasks.append(asyncio.create_task(self._status_loop(), name="status"))
         if live:
             tasks.append(asyncio.create_task(self._reconcile_loop(),
@@ -215,6 +246,8 @@ class Engine:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if self.notifier.enabled:
+            await self.notifier.close()
         for v in self.venues.values():
             await v.close()
         log.info("shutdown — %d trades, %d hedges, exp edge $%.4f, "
@@ -359,8 +392,17 @@ class Engine:
         best = None
         for buy, sell, dkey in ((self.hedge, self.entropy, "sell_entropy"),
                                 (self.entropy, self.hedge, "buy_entropy")):
-            if not (buy.book.is_fresh(cfg.staleness_sec)
-                    and sell.book.is_fresh(cfg.staleness_sec)):
+            if self._drift_halted:
+                # drift sentinel fired: only position-REDUCING directions may
+                # trade (sell_entropy closes an entropy long, buy_entropy
+                # closes an entropy short); flat = fully paused
+                if (dkey == "sell_entropy" and self.entropy.position <= 0) \
+                        or (dkey == "buy_entropy" and self.entropy.position >= 0):
+                    continue
+            if not (buy.book.is_fresh(cfg.staleness_sec,
+                                      cfg.data_staleness_sec)
+                    and sell.book.is_fresh(cfg.staleness_sec,
+                                           cfg.data_staleness_sec)):
                 continue
             if not (buy.ready_to_trade() and sell.ready_to_trade()):
                 continue
@@ -369,7 +411,7 @@ class Engine:
             if self._vlock(buy.key).locked() or self._vlock(sell.key).locked():
                 continue  # mid-execution or mid-reconcile
             if self._venue_limited(buy) or self._venue_limited(sell):
-                continue  # reactive 429 exclusion
+                continue  # reactive 429 exclusion / unresolved fuse
             if not (self._venue_rate_ok(buy) and self._venue_rate_ok(sell)):
                 self._skiplog("%s deferred: venue order budget exhausted", dkey)
                 continue
@@ -402,9 +444,24 @@ class Engine:
                     self._skiplog("%s blocked by position caps (headroom $%.0f)",
                                   dkey, max(headroom, 0.0))
                     continue
+            # margin pre-check: skip before any order hits the exchange —
+            # do not rely on margin rejections to pause the venue
+            if not (self._margin_ok(buy, plan.buy_notional)
+                    and self._margin_ok(sell, plan.sell_notional)):
+                self._skiplog("%s skipped: free margin insufficient", dkey)
+                continue
             if best is None or plan.exp_edge_usd > best[2].exp_edge_usd:
                 best = (buy, sell, plan)
         return best
+
+    def _margin_ok(self, v, notional: float) -> bool:
+        """True when the venue's available balance covers notional × reserve
+        factor (1x leverage assumption). Unknown balance (poll not ready)
+        does not block."""
+        free = getattr(v, "free", None)
+        if free is None:
+            return True
+        return free >= notional * self.cfg.margin_reserve_factor
 
     # ------------------------------------------------------------- execution
 
@@ -465,6 +522,15 @@ class Engine:
         buy.last_traded_ts = sell.last_traded_ts = time.time()
 
         unresolved = binfo.get("unresolved") or sinfo.get("unresolved")
+        for v, info in ((buy, binfo), (sell, sinfo)):
+            if info.get("unresolved"):
+                # fuse the venue: no new orders until reconcile confirms the
+                # on-chain position (see _reconcile_venue)
+                self._venue_unresolved_until[v.key] = float("inf")
+                log.critical("[%s] unresolved leg outcome — venue fused "
+                             "until reconcile confirms chain state", v.name)
+                await self._notify(f"⚠️ [{v.name}] 订单状态未确认，"
+                                   f"已熔断待对账")
         hard_err = (binfo.get("err") is not None
                     or sinfo.get("err") is not None)
         rate_limited = False
@@ -486,6 +552,8 @@ class Engine:
                 log.critical("HALTED after %d consecutive execution problems "
                              "— flatten manually and restart / 连续执行异常，"
                              "引擎已停止，请手动平仓后重启", self.consec_errors)
+                await self._notify("🛑 引擎连续执行异常已停机（HALTED），"
+                                   "请人工检查平仓")
         if sent_ok:
             self.trades += 1
             self.total_exp_edge += plan.exp_edge_usd
@@ -523,8 +591,11 @@ class Engine:
             if v.position * sgn <= 0:
                 continue
             if v.key in self._venue_down \
-                    or not v.book.is_fresh(cfg.staleness_sec):
+                    or not v.book.is_fresh(cfg.staleness_sec,
+                                           cfg.data_staleness_sec):
                 continue  # unreachable or blind: cannot hedge here
+            if v.key in self._venue_unresolved_until:
+                continue  # fill state unknown: hedging off a guessed position
             lk = self._vlock(v.key)
             if lk.locked():
                 continue
@@ -549,8 +620,16 @@ class Engine:
                 if info.get("err") or info.get("unresolved"):
                     log.error("[HEDGE] %s: %s", v.name,
                               info.get("err") or "unresolved")
+                    await self._notify(f"⚠️ [{v.name}] 对冲失败："
+                                       f"{info.get('err') or 'unresolved'}")
                     if str(info.get("err", "")).startswith("RATE_LIMITED"):
                         self._mark_limited(v)
+                    elif info.get("unresolved"):
+                        # same treatment as a taker leg: unknown fill fuses
+                        # the venue until reconcile confirms chain state
+                        self._venue_unresolved_until[v.key] = float("inf")
+                        log.critical("[%s] unresolved hedge outcome — venue "
+                                     "fused until reconcile confirms", v.name)
                     self._reconcile_evt.set()
                 else:
                     fill = info["filled_base"]
@@ -577,21 +656,24 @@ class Engine:
     # phantom hedge oscillations. Grace-guard + venue lock prevent that.
     RECONCILE_GRACE_SEC = 5.0
 
-    async def _reconcile_positions(self, hedge: bool,
-                                   strict: bool = False) -> None:
+    async def _reconcile_positions(self, hedge: bool, strict: bool = False,
+                                   force_keys: Optional[set] = None) -> None:
         now = time.time()
         vs = []
         for v in self.venues.values():
-            if now - v.last_traded_ts <= self.RECONCILE_GRACE_SEC:
+            force = bool(force_keys and v.key in force_keys)
+            grace = (FORCE_RECONCILE_GRACE_SEC if force
+                     else self.RECONCILE_GRACE_SEC)
+            if now - v.last_traded_ts <= grace:
                 continue  # just traded: chain read would be stale
             if v.key in self._venue_down \
                     and now < self._venue_probe_at.get(v.key, 0.0):
                 continue  # down venue: probe only every venue_probe_sec
-            vs.append(v)
+            vs.append((v, force))
         if not vs:
             return
         got = await asyncio.gather(
-            *(self._reconcile_venue(v, strict) for v in vs),
+            *(self._reconcile_venue(v, strict, force) for v, force in vs),
             return_exceptions=True)
         for r in got:
             if isinstance(r, BaseException):
@@ -599,19 +681,34 @@ class Engine:
         if hedge:
             await self._maybe_hedge()
 
-    async def _reconcile_venue(self, v, strict: bool) -> None:
+    async def _reconcile_venue(self, v, strict: bool,
+                               force: bool = False) -> None:
         async with self._vlock(v.key):
             now = time.time()
-            if now - v.last_traded_ts <= self.RECONCILE_GRACE_SEC:
+            grace = (FORCE_RECONCILE_GRACE_SEC if force
+                     else self.RECONCILE_GRACE_SEC)
+            if now - v.last_traded_ts <= grace:
                 return  # traded while waiting for the lock
-            try:
-                r = await v.fetch_position()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
+            # force (unresolved) reconciles retry a few rounds: Lighter's REST
+            # account state lags its ws settlements, so a first read may be
+            # stale/missing while the fill is already on-chain
+            attempts = 3 if force else 1
+            r = None
+            err: Optional[Exception] = None
+            for _ in range(attempts):
+                try:
+                    r = await v.fetch_position()
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    err = e
+                    if attempts > 1:
+                        await asyncio.sleep(1.0)
+            if r is None:
                 if strict:
                     raise RuntimeError(
-                        f"[{v.name}] cannot fetch starting position: {e!r}")
+                        f"[{v.name}] cannot fetch starting position: {err!r}")
                 # exchange unreachable (e.g. scheduled maintenance): pause
                 # trading and keep probing until it answers again
                 n = self._venue_fetch_fails.get(v.key, 0) + 1
@@ -623,9 +720,11 @@ class Engine:
                                  "trading PAUSED; probing every %.0fs until "
                                  "it recovers", v.name, n,
                                  self.cfg.venue_probe_sec)
+                    await self._notify(f"🚫 [{v.name}] API 不可达，"
+                                       f"交易已暂停")
                 elif v.key not in self._venue_down:
                     log.warning("[%s] position fetch failed (%d): %r",
-                                v.name, n, e)
+                                v.name, n, err)
                 return
             if v.key in self._venue_down:
                 log.warning("[%s] API recovered after %.0fs outage — "
@@ -633,6 +732,15 @@ class Engine:
                             now - self._venue_down.pop(v.key))
                 self._update_evt.set()
             self._venue_fetch_fails[v.key] = 0
+            if v.key in self._venue_unresolved_until:
+                # chain state confirmed: the unresolved leg is now known —
+                # lift the fuse and let the venue trade again
+                del self._venue_unresolved_until[v.key]
+                log.warning("[%s] chain state confirmed — unresolved fuse "
+                            "cleared, venue un-fused", v.name)
+                await self._notify(f"✅ [{v.name}] 对账确认链上仓位，"
+                                   f"熔断已解除")
+                self._update_evt.set()
             delta = r - v.position
             if abs(delta) > 1e-12:
                 if abs(delta) > self.cfg.net_tolerance_base:
@@ -655,11 +763,180 @@ class Engine:
             if self.stop.is_set():
                 break
             try:
-                await self._reconcile_positions(hedge=True)
+                await self._reconcile_positions(
+                    hedge=True,
+                    force_keys={k for k, ts in self._venue_unresolved_until.items()
+                                if ts})
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("reconcile failed")
+
+    # -------------------------------------------------------- risk / drift
+
+    async def _risk_loop(self) -> None:
+        """Liquidation-risk watch: mark vs liquidation distance per venue,
+        flatten + halt when a position gets too close."""
+        cfg = self.cfg
+        while not self.stop.is_set():
+            try:
+                await asyncio.wait_for(self.stop.wait(),
+                                       timeout=cfg.risk_loop_sec)
+                return
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await self._check_liquidation()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("risk check failed")
+
+    async def _check_liquidation(self) -> None:
+        cfg = self.cfg
+        threshold = cfg.liquidation_distance_pct / 100.0
+        for v in self.venues.values():
+            try:
+                r = await v.fetch_risk()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("[%s] risk fetch failed: %r", v.name, e)
+                continue
+            if r is None:
+                continue
+            mark, liq = r
+            if mark <= 0 or liq <= 0:
+                continue
+            dist = liq_distance(mark, liq)
+            if dist <= threshold:
+                log.critical("[%s] LIQUIDATION RISK — mark %.6g vs liq %.6g "
+                             "(%.2f%% away); flattening and halting",
+                             v.name, mark, liq, dist * 100.0)
+                await self._notify(
+                    f"🚨 [{v.name}] 强平风险：mark {mark:.4g}，距强平价仅 "
+                    f"{dist * 100:.1f}%——正在平仓并停机")
+                await self._flatten_all()
+                self.halted = True
+                log.critical("HALTED by liquidation risk — flatten done; "
+                             "restart after manual review / 强平风险停机，"
+                             "已平仓，请人工检查后重启")
+                await self._notify("🛑 引擎已因强平风险停机")
+                return
+            if dist <= threshold * 2:
+                log.warning("[%s] liquidation distance %.1f%% (warning zone)",
+                            v.name, dist * 100.0)
+
+    async def _flatten_all(self) -> None:
+        """Reduce-only flatten both venues to zero (liquidation-risk path)."""
+        cfg = self.cfg
+        slip = cfg.hedge_slippage_bps / 1e4
+        for v in sorted(self.venues.values(), key=lambda x: -abs(x.position)):
+            if v.position == 0.0:
+                continue
+            if v.key in self._venue_down or not v.book.is_fresh(
+                    cfg.staleness_sec, cfg.data_staleness_sec):
+                log.critical("[%s] cannot flatten — venue unreachable or "
+                             "blind; manual action required", v.name)
+                continue
+            lk = self._vlock(v.key)
+            async with lk:
+                qty = floor_step(abs(v.position), self._step)
+                if qty < v.min_base:
+                    continue
+                is_sell = v.position > 0
+                ref = v.book.best_bid() if is_sell else v.book.best_ask()
+                if ref is None:
+                    log.critical("[%s] no book to flatten against — manual "
+                                 "action required", v.name)
+                    continue
+                limit = v.px_round(ref * (1 - slip), False) if is_sell \
+                    else v.px_round(ref * (1 + slip), True)
+                self._record_send(v)
+                info = await v.send_taker(is_buy=not is_sell, qty=qty,
+                                          limit_px=limit, reduce_only=True)
+                if info.get("err") or info.get("unresolved"):
+                    log.critical("[%s] flatten order failed: %s — manual "
+                                 "action required", v.name,
+                                 info.get("err") or "unresolved")
+                    await self._notify(f"🚨 [{v.name}] 平仓失败："
+                                       f"{info.get('err') or 'unresolved'}，"
+                                       f"请人工处理")
+                else:
+                    fill = info["filled_base"]
+                    v.position += -fill if is_sell else fill
+                    if fill:
+                        px = info.get("avg_px") or limit
+                        fee = v.fee_bps / 1e4
+                        v.cash += fill * px * (1 - fee) if is_sell \
+                            else -fill * px * (1 + fee)
+                        v.volume_usd += fill * px
+                    log.warning("[FLATTEN] %s %s %.6g/%.6g", v.name,
+                                "SELL" if is_sell else "BUY", fill, qty)
+                v.last_traded_ts = time.time()
+
+    async def _drift_loop(self) -> None:
+        """Midline drift sentinel: sample the premium 1/sec, every
+        drift_check_sec compare the trailing-window mean against the midline;
+        a sustained breach for drift_halt_sec halts opening trades (only
+        position-reducing directions keep trading) with a critical alert.
+        The midline itself is never changed automatically."""
+        cfg = self.cfg
+        while not self.stop.is_set():
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=1.0)
+                return
+            except asyncio.TimeoutError:
+                pass
+            try:
+                self._sample_premium()
+                await self._check_drift()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("drift monitor failed")
+
+    def _sample_premium(self) -> None:
+        p = self.premium_bps()
+        if p is not None:
+            self._premium_hist.append((time.time(), p))
+
+    async def _check_drift(self) -> None:
+        cfg = self.cfg
+        now = time.time()
+        if now - self._last_drift_check < cfg.drift_check_sec:
+            return
+        self._last_drift_check = now
+        if not self._premium_hist:
+            return
+        cutoff = now - cfg.drift_window_sec
+        vals = [p for ts, p in self._premium_hist if ts >= cutoff]
+        if not vals:
+            return
+        mean = sum(vals) / len(vals)
+        limit = (cfg.upper_bps + cfg.lower_bps) / 2.0 * cfg.drift_band_factor
+        if abs(mean - cfg.midline_bps) <= limit:
+            if self._drift_started is not None:
+                log.info("premium mean %.2f bps back inside drift band — "
+                         "sentinel disarmed", mean)
+            self._drift_started = None
+            return
+        if self._drift_started is None:
+            self._drift_started = now
+            log.warning("premium mean %.2f bps drifting from midline %.2f "
+                        "(limit %.2f) — watching for %.0fs", mean,
+                        cfg.midline_bps, limit, cfg.drift_halt_sec)
+        elif now - self._drift_started >= cfg.drift_halt_sec \
+                and not self._drift_halted:
+            self._drift_halted = True
+            log.critical("DRIFT HALT — premium mean %.2f bps vs midline "
+                         "%.2f sustained %.0fs; opening paused, only "
+                         "position-reducing trades allowed / 中枢漂移停机，"
+                         "仅放行减仓方向，请人工确认后调整配置重启",
+                         mean, cfg.midline_bps, cfg.drift_halt_sec)
+            await self._notify(f"🧭 中枢漂移告警：均值 {mean:+.2f} bps vs "
+                               f"midline {cfg.midline_bps:+.2f} 持续超限"
+                               f"——已停开仓，仅减仓")
 
     async def _balance_loop(self) -> None:
         while not self.stop.is_set():
@@ -727,9 +1004,11 @@ class Engine:
                 raise
             books = " | ".join(
                 f"{v.name} {v.book.best_bid() or '—'}/{v.book.best_ask() or '—'}"
-                + ("" if v.book.is_fresh(cfg.staleness_sec) else " STALE")
+                + ("" if v.book.is_fresh(cfg.staleness_sec,
+                                         cfg.data_staleness_sec) else " STALE")
                 + (" RATE-LTD" if self._venue_limited(v) else "")
                 + (" DOWN" if v.key in self._venue_down else "")
+                + (" UNRESOLVED" if v.key in self._venue_unresolved_until else "")
                 for v in self.venues.values())
             prem = self.premium_bps()
             prem_s = f"{prem:+.2f}" if prem is not None else "—"
@@ -747,6 +1026,7 @@ class Engine:
                      self.hedges,
                      f"${pnl:+.4f}" if pnl is not None else "—",
                      self.total_exp_edge, self.total_fill_edge, rec,
+                     " *** DRIFT ***" if self._drift_halted else "",
                      " *** HALTED ***" if self.halted else "")
 
     def _log_csv(self, direction, buy, sell, plan: ArbPlan, ok: bool, bfill,

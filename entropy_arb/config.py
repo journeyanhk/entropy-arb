@@ -124,6 +124,15 @@ class Config:
     reconcile_sec: float
     venue_probe_sec: float
     http_keepalive_sec: float
+    # data freshness (P1-5) + risk (P0-2) + drift sentinel (P1-3)
+    data_staleness_sec: float
+    drift_window_sec: float
+    drift_check_sec: float
+    drift_halt_sec: float
+    drift_band_factor: float
+    risk_loop_sec: float
+    liquidation_distance_pct: float
+    margin_reserve_factor: float
     # recorder
     recorder_enabled: bool
     recorder_csv: str
@@ -190,6 +199,14 @@ _SCHEMA: Dict[str, Any] = {
         "reconcile_sec": float,
         "venue_probe_sec": float,
         "http_keepalive_sec": float,
+        "data_staleness_sec": float,
+        "drift_window_sec": float,
+        "drift_check_sec": float,
+        "drift_halt_sec": float,
+        "drift_band_factor": float,
+        "risk_loop_sec": float,
+        "liquidation_distance_pct": float,
+        "margin_reserve_factor": float,
     },
     "recorder": {
         "enabled": bool,
@@ -334,6 +351,15 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
                                        _env_s("LIGHTER_API_PRIVATE_KEY")),
         )
 
+    liq_pct = float(_get(raw, "execution", "liquidation_distance_pct", 10.0))
+    if not 0.0 < liq_pct < 100.0:
+        raise ConfigError("execution.liquidation_distance_pct must be in "
+                          "(0, 100) / 强平距离阈值必须在 0-100% 之间")
+    margin_factor = float(_get(raw, "execution", "margin_reserve_factor", 1.2))
+    if margin_factor < 1.0:
+        raise ConfigError("execution.margin_reserve_factor must be >= 1.0 "
+                          "(margin headroom can never be below notional)")
+
     return Config(
         symbol=symbol,
         hedge_venue=hedge_venue,
@@ -347,18 +373,26 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         min_order_notional=float(_get(raw, "sizing", "min_order_notional_usd", 10.0)),
         inventory_scale_bps=float(_get(raw, "inventory", "scale_bps", 10.0)),
         inventory_floor_frac=float(_get(raw, "inventory", "floor_frac", 0.5)),
-        premium_persist_sec=float(_get(raw, "execution", "premium_persist_sec", 0.3)),
-        cooldown_sec=float(_get(raw, "execution", "cooldown_sec", 0.0)),
+        premium_persist_sec=float(_get(raw, "execution", "premium_persist_sec", 0.5)),
+        cooldown_sec=float(_get(raw, "execution", "cooldown_sec", 1.0)),
         settle_timeout_sec=float(_get(raw, "execution", "settle_timeout_sec", 5.0)),
-        leg_slippage_bps=float(_get(raw, "execution", "leg_slippage_bps", 50.0)),
+        leg_slippage_bps=float(_get(raw, "execution", "leg_slippage_bps", 30.0)),
         hedge_slippage_bps=float(_get(raw, "execution", "hedge_slippage_bps", 20.0)),
         net_tolerance_base=float(_get(raw, "execution", "net_tolerance_base", 0.001)),
         max_consecutive_errors=int(_get(raw, "execution", "max_consecutive_errors", 3)),
         rate_limit_pause_sec=float(_get(raw, "execution", "rate_limit_pause_sec", 10.0)),
-        staleness_sec=float(_get(raw, "execution", "staleness_sec", 10.0)),
+        staleness_sec=float(_get(raw, "execution", "staleness_sec", 2.5)),
         reconcile_sec=float(_get(raw, "execution", "reconcile_sec", 15.0)),
         venue_probe_sec=float(_get(raw, "execution", "venue_probe_sec", 30.0)),
         http_keepalive_sec=float(_get(raw, "execution", "http_keepalive_sec", 10.0)),
+        data_staleness_sec=float(_get(raw, "execution", "data_staleness_sec", 60.0)),
+        drift_window_sec=float(_get(raw, "execution", "drift_window_sec", 1800.0)),
+        drift_check_sec=float(_get(raw, "execution", "drift_check_sec", 60.0)),
+        drift_halt_sec=float(_get(raw, "execution", "drift_halt_sec", 600.0)),
+        drift_band_factor=float(_get(raw, "execution", "drift_band_factor", 1.0)),
+        risk_loop_sec=float(_get(raw, "execution", "risk_loop_sec", 30.0)),
+        liquidation_distance_pct=liq_pct,
+        margin_reserve_factor=margin_factor,
         recorder_enabled=bool(_get(raw, "recorder", "enabled", True)),
         recorder_csv=_get(raw, "recorder", "csv", "logs/minutes.csv"),
         log_level=str(_get(raw, "logging", "level", "INFO")).upper(),

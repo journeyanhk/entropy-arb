@@ -102,6 +102,53 @@ def test_nonpositive_band():
                  "must be > 0")
 
 
+def test_phase1_defaults():
+    cfg = load(MINIMAL)
+    assert cfg.premium_persist_sec == 0.5        # phantom filter on by default
+    assert cfg.staleness_sec == 2.5              # taker-tight freshness
+    assert cfg.cooldown_sec == 1.0
+    assert cfg.data_staleness_sec == 60.0
+    assert cfg.drift_window_sec == 1800.0
+    assert cfg.drift_check_sec == 60.0
+    assert cfg.drift_halt_sec == 600.0
+    assert cfg.drift_band_factor == 1.0
+    assert cfg.risk_loop_sec == 30.0
+    assert cfg.liquidation_distance_pct == 10.0
+    assert cfg.margin_reserve_factor == 1.2
+
+
+def test_risk_config_overrides():
+    cfg = load(MINIMAL + """
+execution:
+  risk_loop_sec: 15.0
+  liquidation_distance_pct: 5.0
+  margin_reserve_factor: 2.0
+  data_staleness_sec: 30.0
+""")
+    assert cfg.risk_loop_sec == 15.0
+    assert cfg.liquidation_distance_pct == 5.0
+    assert cfg.margin_reserve_factor == 2.0
+    assert cfg.data_staleness_sec == 30.0
+
+
+def test_risk_config_validation():
+    expect_error(MINIMAL + "\nexecution:\n  liquidation_distance_pct: 0\n",
+                 "liquidation_distance_pct")
+    expect_error(MINIMAL + "\nexecution:\n  liquidation_distance_pct: 120\n",
+                 "liquidation_distance_pct")
+    expect_error(MINIMAL + "\nexecution:\n  margin_reserve_factor: 0.5\n",
+                 "margin_reserve_factor")
+
+
+def test_example_config_phase1_values():
+    cfg = load_config(EXAMPLE, NO_ENV, symbol="SNDK", hedge_venue="lighter-rh")
+    assert cfg.entropy.cap_usd == 40 and cfg.hedge.cap_usd == 40
+    assert cfg.max_order_notional == 20
+    assert cfg.inventory_floor_frac == 0.5
+    assert cfg.premium_persist_sec == 0.5
+    assert cfg.upper_bps == 5.0 and cfg.lower_bps == 5.0
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
