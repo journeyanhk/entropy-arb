@@ -154,6 +154,18 @@ def test_scan_skips_when_free_margin_insufficient():
     assert run_scan(eng) is None
 
 
+def test_margin_skip_logs_venue_and_numbers(caplog):
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    eng.entropy.free = 0.0
+    with caplog.at_level(__import__("logging").INFO, logger="engine"):
+        run_scan(eng)
+    assert any("free margin insufficient" in r.message and "ENTROPY" in r.message
+               and "free=$0.00" in r.message and "need=$" in r.message
+               for r in caplog.records)
+
+
 def test_scan_fires_with_sufficient_margin():
     eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
     eng.entropy.set_book(100.14, 100.16)

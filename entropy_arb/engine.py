@@ -458,9 +458,17 @@ class Engine:
                     continue
             # margin pre-check: skip before any order hits the exchange —
             # do not rely on margin rejections to pause the venue
-            if not (self._margin_ok(buy, plan.buy_notional)
-                    and self._margin_ok(sell, plan.sell_notional)):
-                self._skiplog("%s skipped: free margin insufficient", dkey)
+            m_buy = self._margin_ok(buy, plan.buy_notional)
+            m_sell = self._margin_ok(sell, plan.sell_notional)
+            if not (m_buy and m_sell):
+                detail = " | ".join(
+                    f"{v.name} free=${(v.free if v.free is not None else float('nan')):.2f}"
+                    f" need=${n * self.cfg.margin_reserve_factor:.2f}"
+                    for v, n, ok in ((buy, plan.buy_notional, m_buy),
+                                     (sell, plan.sell_notional, m_sell))
+                    if not ok)
+                self._skiplog("%s skipped: free margin insufficient — %s",
+                              dkey, detail)
                 continue
             if best is None or plan.exp_edge_usd > best[2].exp_edge_usd:
                 best = (buy, sell, plan)
