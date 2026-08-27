@@ -101,6 +101,7 @@ class Engine:
         self._drift_started: Optional[float] = None
         self._last_drift_check = 0.0
         self._drift_halted = False
+        self._drift_back_since: Optional[float] = None
         # telegram alerts (no-op without credentials)
         self.notifier = Notifier.from_env()
 
@@ -241,8 +242,10 @@ class Engine:
         if self._exec_tasks:  # let in-flight executions settle, never cancel
             log.info("waiting for %d in-flight execution(s) to settle",
                      len(self._exec_tasks))
+            # worst-case leg now runs settle_timeout + 3×(REST query + 1s);
+            # keep the window wide enough to never abandon an unresolved leg
             await asyncio.wait(self._exec_tasks,
-                               timeout=cfg.settle_timeout_sec + 2.0)
+                               timeout=cfg.settle_timeout_sec + 8.0)
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -392,6 +395,7 @@ class Engine:
         best = None
         for buy, sell, dkey in ((self.hedge, self.entropy, "sell_entropy"),
                                 (self.entropy, self.hedge, "buy_entropy")):
+            plan_cap = cfg.max_order_notional
             if self._drift_halted:
                 # drift sentinel fired: only position-REDUCING directions may
                 # trade (sell_entropy closes an entropy long, buy_entropy
@@ -399,6 +403,14 @@ class Engine:
                 if (dkey == "sell_entropy" and self.entropy.position <= 0) \
                         or (dkey == "buy_entropy" and self.entropy.position >= 0):
                     continue
+                # size clamp: never let a "reduce" slice cross through zero
+                # into a fresh position while the center is untrustworthy.
+                # cap_notional applies to the BUY leg, so reference its ask:
+                # qty = cap / buy_ask <= |position| holds exactly.
+                m = buy.book.best_ask()
+                if m:
+                    plan_cap = min(plan_cap,
+                                   abs(self.entropy.position) * m)
             if not (buy.book.is_fresh(cfg.staleness_sec,
                                       cfg.data_staleness_sec)
                     and sell.book.is_fresh(cfg.staleness_sec,
@@ -419,7 +431,7 @@ class Engine:
             if (buy.book.last_update_ts <= buy.last_traded_ts
                     or sell.book.last_update_ts <= sell.last_traded_ts):
                 continue
-            plan, reason = self._plan(buy, sell, cfg.max_order_notional)
+            plan, reason = self._plan(buy, sell, plan_cap)
             edge_present = reason not in ("no_edge", "empty_book")
             if not edge_present:
                 self._armed[dkey] = None
@@ -439,7 +451,7 @@ class Engine:
             headroom = self._headroom(buy, sell, plan.buy_limit)
             if headroom < plan.buy_notional:
                 plan, _ = self._plan(buy, sell,
-                                     min(cfg.max_order_notional, headroom))
+                                     min(plan_cap, headroom))
                 if plan is None:
                     self._skiplog("%s blocked by position caps (headroom $%.0f)",
                                   dkey, max(headroom, 0.0))
@@ -689,23 +701,48 @@ class Engine:
                      else self.RECONCILE_GRACE_SEC)
             if now - v.last_traded_ts <= grace:
                 return  # traded while waiting for the lock
-            # force (unresolved) reconciles retry a few rounds: Lighter's REST
-            # account state lags its ws settlements, so a first read may be
-            # stale/missing while the fill is already on-chain
-            attempts = 3 if force else 1
+            # force (unresolved) reconciles must not un-fuse on a single
+            # read: Lighter's REST account state lags its ws settlements, so
+            # a read taken right after the fill may return the PRE-fill
+            # position. Require two consistent reads ~1s apart (the old
+            # position_sync_confirmations=2 recipe) and retry a few rounds;
+            # while unconfirmed the venue stays fused — it cannot trade
+            # anyway, so waiting is free.
             r = None
             err: Optional[Exception] = None
-            for _ in range(attempts):
+            if force:
+                for _ in range(3):
+                    a = b = None
+                    try:
+                        a = await v.fetch_position(force=True)
+                        await asyncio.sleep(1.0)
+                        b = await v.fetch_position(force=True)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        err = e
+                        await asyncio.sleep(1.0)
+                        continue
+                    if abs(a - b) <= 1e-12:
+                        r = b
+                        break
+                    err = None  # reads differ: REST catching up, try again
+                    await asyncio.sleep(1.0)
+            else:
                 try:
                     r = await v.fetch_position()
-                    break
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     err = e
-                    if attempts > 1:
-                        await asyncio.sleep(1.0)
             if r is None:
+                if err is None:
+                    # the reads kept differing (REST catching up to a recent
+                    # fill): not an API failure — stay fused, no venue-down
+                    # penalty, and retry on the next reconcile cycle
+                    log.warning("[%s] force reconcile reads inconsistent — "
+                                "staying fused, retrying next cycle", v.name)
+                    return
                 if strict:
                     raise RuntimeError(
                         f"[{v.name}] cannot fetch starting position: {err!r}")
@@ -810,14 +847,16 @@ class Engine:
                 continue
             dist = liq_distance(mark, liq)
             if dist <= threshold:
+                # halt FIRST: once the risk path commits to flattening, no
+                # new signal may reopen the position we are about to close
+                self.halted = True
                 log.critical("[%s] LIQUIDATION RISK — mark %.6g vs liq %.6g "
-                             "(%.2f%% away); flattening and halting",
+                             "(%.2f%% away); halting and flattening",
                              v.name, mark, liq, dist * 100.0)
                 await self._notify(
                     f"🚨 [{v.name}] 强平风险：mark {mark:.4g}，距强平价仅 "
-                    f"{dist * 100:.1f}%——正在平仓并停机")
+                    f"{dist * 100:.1f}%——正在停机并平仓")
                 await self._flatten_all()
-                self.halted = True
                 log.critical("HALTED by liquidation risk — flatten done; "
                              "restart after manual review / 强平风险停机，"
                              "已平仓，请人工检查后重启")
@@ -920,7 +959,34 @@ class Engine:
                 log.info("premium mean %.2f bps back inside drift band — "
                          "sentinel disarmed", mean)
             self._drift_started = None
+            if self._drift_halted:
+                if cfg.drift_auto_resume_sec > 0:
+                    if self._drift_back_since is None:
+                        self._drift_back_since = now
+                        log.warning("premium mean %.2f bps back inside band "
+                                    "— auto-resume in %.0fs if sustained",
+                                    mean, cfg.drift_auto_resume_sec)
+                    elif now - self._drift_back_since \
+                            >= cfg.drift_auto_resume_sec:
+                        self._drift_halted = False
+                        self._drift_back_since = None
+                        log.warning("DRIFT auto-resume — premium back inside "
+                                    "band for %.0fs; opening resumed / "
+                                    "漂移已回到带内，恢复开仓",
+                                    cfg.drift_auto_resume_sec)
+                        await self._notify("🧭 漂移已回到带内持续 "
+                                           f"{cfg.drift_auto_resume_sec:.0f}s，"
+                                           "引擎恢复开仓")
+                else:
+                    log.warning("premium mean %.2f bps back inside band — "
+                                "still DRIFT-HALTED; restart to resume / "
+                                "漂移均值已回带内但仍停机，请人工确认后重启",
+                                mean)
+            else:
+                self._drift_back_since = None
             return
+        # still breaching: reset any pending auto-resume wait
+        self._drift_back_since = None
         if self._drift_started is None:
             self._drift_started = now
             log.warning("premium mean %.2f bps drifting from midline %.2f "

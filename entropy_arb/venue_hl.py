@@ -321,7 +321,9 @@ class HLVenue:
             fr += float(st.get("withdrawable") or 0.0)
         return eq, fr
 
-    async def fetch_position(self) -> float:
+    async def fetch_position(self, force: bool = False) -> float:
+        # force: unified interface with LighterVenue (HL has no account
+        # snapshot cache to bypass)
         addr = self._query_address()
         assert addr is not None
         st = await self._info({"type": "clearinghouseState", "user": addr,

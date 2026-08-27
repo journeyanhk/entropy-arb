@@ -93,6 +93,7 @@ execution:
   drift_check_sec: 60.0       # how often the mean is rechecked / 均值检查周期
   drift_halt_sec: 600.0       # sustained breach before halting / 持续超限才停机（10 分钟）
   drift_band_factor: 1.0      # breach limit = (upper+lower)/2 × this / 超限倍数
+  drift_auto_resume_sec: 0    # auto-resume after premium back in band this long; 0 = manual restart only / 回带内持续 N 秒自动恢复；0 = 只人工重启
   # ---- 强平/保证金风控 (P0-2) ----
   risk_loop_sec: 30.0         # liquidation-distance check cadence / 强平距离检查周期
   liquidation_distance_pct: 10.0  # flatten+halt when this close to liq / 距强平价阈值

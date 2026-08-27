@@ -1,10 +1,12 @@
-"""Notifier: enable flag, queueing, drop-on-full; Lighter REST order query.
+"""Notifier: enable flag, queueing, drop-on-full; Lighter REST order query
+and account-snapshot TTL cache.
 
 Run:  python3 -m pytest tests/  (or  python3 tests/test_notifier.py)
 """
 import asyncio
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -39,6 +41,9 @@ class FakeResp:
 
     def __init__(self, payload):
         self._payload = payload
+
+    def raise_for_status(self):
+        pass
 
     async def json(self):
         return self._payload
@@ -122,6 +127,58 @@ def test_query_order_bad_status_ignored():
     info = asyncio.run(v._query_order(5))
     assert info["status"] == "filled" and info["filled_base"] == 0.0
     assert info["avg_px"] is None
+
+
+class CountingSession:
+    def __init__(self, payload):
+        self._payload = payload
+        self.calls = 0
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls += 1
+        return FakeCtx(self._payload)
+
+
+def test_account_cache_reuses_snapshot():
+    s = CountingSession({"accounts": [{"total_asset_value": "10"}]})
+    v = make_venue(s)
+
+    async def go():
+        a1 = await v._account()
+        a2 = await v._account()
+        assert a1 is a2 and s.calls == 1      # TTL: second read cached
+
+    asyncio.run(go())
+
+
+def test_account_cache_expires():
+    s = CountingSession({"accounts": [{"total_asset_value": "10"}]})
+    v = make_venue(s)
+
+    async def go():
+        await v._account()                        # fetch + cache (call 1)
+        v._acct_cache_ts = time.time() - 10.0     # force expiry
+        await v._account()                        # fetch again (call 2)
+        assert s.calls == 2
+
+    asyncio.run(go())
+
+
+def test_fetch_position_force_bypasses_cache():
+    payload = {"accounts": [{"positions": [
+        {"market_id": 1, "sign": 1, "position": "5"}]}]}
+    s = CountingSession(payload)
+    v = make_venue(s)
+    v.market_id = 1
+
+    async def go():
+        await v._account()                    # fills the cache (call 1)
+        pos1 = await v.fetch_position()       # served from cache
+        pos2 = await v.fetch_position(force=True)   # bypasses cache (call 2)
+        assert pos1 == 5.0 and pos2 == 5.0
+        assert s.calls == 2
+
+    asyncio.run(go())
 
 
 if __name__ == "__main__":

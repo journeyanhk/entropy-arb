@@ -36,6 +36,10 @@ log = logging.getLogger("lighter")
 OPEN_STATUSES = {"in-progress", "pending", "open"}
 AUTH_REFRESH_SEC = 8 * 60
 REST_TIMEOUT = 10.0
+# account reads share one REST call (rate-limit heavy on Lighter); the
+# risk/balance/reconcile loops poll on top of each other, so cache the
+# snapshot briefly. The force-reconcile path bypasses the cache.
+ACCOUNT_CACHE_TTL_SEC = 3.0
 
 
 class AccountOrdersFeed:
@@ -167,6 +171,8 @@ class LighterVenue:
         self.signer = None
         self.orders_feed: Optional[AccountOrdersFeed] = None
         self._coi = int(time.time() * 1000)
+        self._acct_cache: Optional[dict] = None
+        self._acct_cache_ts = 0.0
 
     # ------------------------------------------------------------------ REST
 
@@ -380,7 +386,15 @@ class LighterVenue:
 
     # -------------------------------------------------------------- accounts
 
-    async def _account(self) -> Optional[dict]:
+    async def _account(self,
+                       cache_ttl: float = ACCOUNT_CACHE_TTL_SEC) -> Optional[dict]:
+        """Account snapshot with a short TTL cache (account reads are
+        rate-limit heavy). cache_ttl=0 always fetches fresh — used by the
+        force-reconcile path, which must never see a pre-fill snapshot."""
+        now = time.time()
+        if cache_ttl > 0 and self._acct_cache is not None \
+                and now - self._acct_cache_ts < cache_ttl:
+            return self._acct_cache
         c = self.conf.lighter_creds
         if c is None or c.account_index is None:
             return None
@@ -388,6 +402,8 @@ class LighterVenue:
                                params={"by": "index",
                                        "value": str(c.account_index)})
         for acct in data.get("accounts") or []:
+            self._acct_cache = acct
+            self._acct_cache_ts = now
             return acct
         return None
 
@@ -398,8 +414,9 @@ class LighterVenue:
         return (float(acct.get("total_asset_value") or 0.0),
                 float(acct.get("available_balance") or 0.0))
 
-    async def fetch_position(self) -> float:
-        acct = await self._account()
+    async def fetch_position(self, force: bool = False) -> float:
+        acct = await self._account(
+            cache_ttl=0.0 if force else ACCOUNT_CACHE_TTL_SEC)
         if acct is None:
             raise RuntimeError(f"[{self.name}] account not found")
         for p in acct.get("positions") or []:

@@ -7,6 +7,22 @@
 ## [Unreleased]
 
 ### 新增
+- 一期修复复查轮（review2 R1–R7，2026-08-27）：
+  - R1：force 对账双读确认（间隔 1 s、两次一致才采纳解熔，最多 3 轮；不一致不计 venue-down 惩罚）
+  - R2：强平路径先置 `halted` 再 flatten，杜绝平仓与停机之间信号回加仓位
+  - R3：drift 停机下减仓单名义钳制到 `|entropy.position| × buy腿ask`，防穿零反向开仓
+  - R4：漂移回带内日志明确 "still DRIFT-HALTED"；新增 `drift_auto_resume_sec` 配置（默认 0 = 仅人工重启）
+  - R6：shutdown 等待窗口 `settle_timeout_sec + 8`（覆盖最坏腿时长）
+  - R7：Lighter `_account()` 3 s TTL 缓存（force 对账绕过）；`fetch_position(force=)` 接口统一
+- 新增执行配置键 1 个（drift_auto_resume_sec，默认 0.0）
+
+### 变更
+- `fetch_position` 签名统一增加 `force: bool = False`（HL 侧为兼容参数）
+
+### 修复
+- 强平竞态（先平仓后停机）、force 解熔竞态（单次读数）、drift 减仓穿零、误导性漂移日志
+
+### 新增
 - 一期实盘加固（2026-08-27）：
   - P0-1：Lighter 腿结算超时后 REST accountOrders 按 client_order_index 查单终态（3 次 × 1s）；unresolved 对该所熔断禁开单，对账采纳链上仓位后解除；强制对账宽限 5s→3s + 重试 3 轮，裸露窗口压到 ~5s
   - P0-2：30s 强平风控循环（mark vs liquidationPx，距离 <10% → 双边 reduce-only 平仓 + HALT + 告警）；_scan 保证金预检（free < notional × 1.2 不发单）

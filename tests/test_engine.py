@@ -222,6 +222,151 @@ def test_drift_sentinel_disarms_when_premium_returns():
     asyncio.run(go())
 
 
+def test_drift_stays_halted_without_auto_resume():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.cfg.drift_window_sec = 60.0
+    eng.cfg.drift_check_sec = 1.0
+    eng._drift_halted = True
+    now = __import__("time").time()
+
+    async def go():
+        for i in range(3600):
+            eng._premium_hist.append((now - 1800 + i, 5.0))
+        eng._last_drift_check = now - 10.0
+        await eng._check_drift()
+        assert eng._drift_halted          # manual restart only (default)
+
+    asyncio.run(go())
+
+
+def test_drift_auto_resume_after_sustained_return():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.cfg.drift_window_sec = 60.0
+    eng.cfg.drift_check_sec = 1.0
+    eng.cfg.drift_auto_resume_sec = 5.0
+    eng._drift_halted = True
+    now = __import__("time").time()
+
+    async def go():
+        for i in range(3600):
+            eng._premium_hist.append((now - 1800 + i, 5.0))
+        eng._last_drift_check = now - 10.0
+        eng._drift_back_since = now - 6.0     # back inside for 6s already
+        await eng._check_drift()
+        assert not eng._drift_halted
+        assert eng._drift_back_since is None
+
+    asyncio.run(go())
+
+
+def test_drift_auto_resume_waits_for_sustained_return():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.cfg.drift_window_sec = 60.0
+    eng.cfg.drift_check_sec = 1.0
+    eng.cfg.drift_auto_resume_sec = 30.0
+    eng._drift_halted = True
+    now = __import__("time").time()
+
+    async def go():
+        for i in range(3600):
+            eng._premium_hist.append((now - 1800 + i, 5.0))
+        eng._last_drift_check = now - 10.0
+        eng._drift_back_since = now - 5.0     # not sustained yet
+        await eng._check_drift()
+        assert eng._drift_halted              # still waiting
+        assert eng._drift_back_since is not None
+
+    asyncio.run(go())
+
+
+def test_drift_halt_clamps_reduce_size():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    eng.entropy.free = eng.hedge.free = 1e9
+    eng._drift_halted = True
+    eng.entropy.position = 0.15               # ~$15 notional left
+    eng.hedge.position = -0.15
+    best = run_scan(eng)
+    assert best is not None
+    plan = best[2]
+    assert plan.qty <= 0.15 + 1e-9            # never crosses through zero
+    assert plan.buy_notional <= 15.0 * 1.05   # clamped to |pos| × price
+    assert plan.buy_notional < 30.0           # far below the 500 default cap
+
+
+class ScriptedVenue(StubVenue):
+    def __init__(self, key, label, reads):
+        super().__init__(key, label)
+        self._reads = list(reads)
+        self.force_reads = []
+
+    async def fetch_position(self, force=False):
+        self.force_reads.append(force)
+        if self._reads:
+            return self._reads.pop(0)
+        return 0.0
+
+
+def test_force_reconcile_requires_consistent_pair():
+    eng = make_engine()
+    eng.hedge = ScriptedVenue("hedge", "RH", reads=[10.0, 10.0])
+    eng.venues = {"entropy": eng.entropy, "hedge": eng.hedge}
+    eng._venue_unresolved_until["hedge"] = float("inf")
+
+    asyncio.run(eng._reconcile_venue(eng.hedge, strict=False, force=True))
+    assert "hedge" not in eng._venue_unresolved_until
+    assert abs(eng.hedge.position - 10.0) < 1e-12     # adopted
+    assert eng.hedge.force_reads == [True, True]      # both bypass cache
+
+
+def test_force_reconcile_retries_until_consistent():
+    eng = make_engine()
+    # first pair differs (REST catching up), second pair agrees
+    eng.hedge = ScriptedVenue("hedge", "RH", reads=[5.0, 10.0, 10.0, 10.0])
+    eng.venues = {"entropy": eng.entropy, "hedge": eng.hedge}
+    eng._venue_unresolved_until["hedge"] = float("inf")
+
+    asyncio.run(eng._reconcile_venue(eng.hedge, strict=False, force=True))
+    assert "hedge" not in eng._venue_unresolved_until
+    assert abs(eng.hedge.position - 10.0) < 1e-12
+
+
+def test_force_reconcile_stays_fused_when_never_consistent():
+    eng = make_engine()
+    eng.hedge = ScriptedVenue("hedge", "RH",
+                              reads=[5.0, 10.0] * 3)   # 3 rounds all differ
+    eng.venues = {"entropy": eng.entropy, "hedge": eng.hedge}
+    eng._venue_unresolved_until["hedge"] = float("inf")
+
+    asyncio.run(eng._reconcile_venue(eng.hedge, strict=False, force=True))
+    assert "hedge" in eng._venue_unresolved_until      # still fused
+    assert eng.hedge.position == 0.0                   # nothing adopted
+    assert eng.hedge.key not in eng._venue_down        # no venue-down penalty
+
+
+def test_liquidation_halts_before_flatten():
+    eng = make_engine()
+
+    async def risk_venue():
+        return 100.0, 90.0        # 10% from liquidation: at the threshold
+
+    async def risk_none():
+        return None
+
+    eng.entropy.fetch_risk = risk_venue
+    eng.hedge.fetch_risk = risk_none
+    order = []
+
+    async def fake_flatten():
+        order.append(("flatten", eng.halted))
+
+    eng._flatten_all = fake_flatten
+    asyncio.run(eng._check_liquidation())
+    assert eng.halted
+    assert order == [("flatten", True)]   # halted was set BEFORE flattening
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

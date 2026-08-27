@@ -19,22 +19,26 @@
 - 前提: 超时后 REST 查单 3 次仍未确认终态
 - 预期结果: unresolved 返回 → 该所熔断；对账确认后解除；裸露窗口 ~5s
 
+#### 场景: REST 滞后导致单次读数旧（review2 R1）
+- 前提: force 对账首读返回成交前仓位
+- 预期结果: 连续两次读数（间隔 1 s）一致才采纳解熔；不一致保持熔断等下一轮，不计入 venue-down 惩罚
+
 ### 需求: 强平/保证金风控（P0-2）
 **模块:** engine
 `_risk_loop`（30s）拉 `venue.fetch_risk()`；`liq_distance(mark, liq) = |mark-liq|/mark <= liquidation_distance_pct/100` → `_flatten_all()`（逐所 reduce-only 平到 0）+ HALT + Telegram。`_scan` 在发单前用 `_margin_ok(v, notional)`（free >= notional × margin_reserve_factor，free 未知不阻塞）预检两腿。
 
 #### 场景: 接近强平价
-- 预期结果: 双边平仓 + 停机 + 告警
+- 预期结果: 先置 halted 再双边平仓（平仓期间新信号被挡）+ 停机 + 告警
 
 #### 场景: 保证金不足
 - 预期结果: 跳过该方向，不发单
 
 ### 需求: 中枢漂移哨兵（P1-3）
 **模块:** engine
-`_drift_loop` 每秒采样溢价入 `_premium_hist`；每 `drift_check_sec` 计算 `drift_window_sec` 内均值；`|均值−midline| > (upper+lower)/2 × drift_band_factor` 持续 `drift_halt_sec` → `_drift_halted=True` + critical + Telegram。`_scan` 在漂移停机时只放行减仓方向（sell_entropy 需 entropy.position>0；buy_entropy 需 entropy.position<0）。不自动改 midline。
+`_drift_loop` 每秒采样溢价入 `_premium_hist`；每 `drift_check_sec` 计算 `drift_window_sec` 内均值；`|均值−midline| > (upper+lower)/2 × drift_band_factor` 持续 `drift_halt_sec` → `_drift_halted=True` + critical + Telegram。`_scan` 在漂移停机时只放行减仓方向（sell_entropy 需 entropy.position>0；buy_entropy 需 entropy.position<0），且单笔名义钳制到 `|entropy.position| × buy腿ask`（review2 R3，防穿零反向开仓）。`drift_auto_resume_sec=0`（默认）不自动解除，人工重启；>0 时回带内持续 N 秒自动恢复（review2 R4）。不自动改 midline。
 
 #### 场景: 溢价中枢漂移
-- 预期结果: 停开仓、仅减仓、人工确认后改配置重启
+- 预期结果: 停开仓、仅减仓（有数量钳制）、人工确认后改配置重启；可选自动恢复
 
 ### 需求: Telegram 告警（⑥）
 **模块:** engine / notifier
@@ -47,9 +51,9 @@
 - `Engine._check_drift()` 漂移哨兵单次检查
 
 ## 数据模型
-- `_venue_unresolved_until: Dict[str, float]` unresolved 熔断（对账成功后清除）
+- `_venue_unresolved_until: Dict[str, float]` unresolved 熔断（force 对账双读一致确认后清除）
 - `_premium_hist: deque[(ts, premium)]` 溢价采样（maxlen = drift_window_sec+2）
-- `_drift_started / _drift_halted` 漂移状态
+- `_drift_started / _drift_halted / _drift_back_since` 漂移状态与自动恢复计时
 
 ## 依赖
 - book（plan_arb / floor_step）、config、notifier、recorder、venue_hl、venue_lighter

@@ -112,6 +112,7 @@ def test_phase1_defaults():
     assert cfg.drift_check_sec == 60.0
     assert cfg.drift_halt_sec == 600.0
     assert cfg.drift_band_factor == 1.0
+    assert cfg.drift_auto_resume_sec == 0.0   # manual restart only
     assert cfg.risk_loop_sec == 30.0
     assert cfg.liquidation_distance_pct == 10.0
     assert cfg.margin_reserve_factor == 1.2
@@ -124,11 +125,13 @@ execution:
   liquidation_distance_pct: 5.0
   margin_reserve_factor: 2.0
   data_staleness_sec: 30.0
+  drift_auto_resume_sec: 120.0
 """)
     assert cfg.risk_loop_sec == 15.0
     assert cfg.liquidation_distance_pct == 5.0
     assert cfg.margin_reserve_factor == 2.0
     assert cfg.data_staleness_sec == 30.0
+    assert cfg.drift_auto_resume_sec == 120.0
 
 
 def test_risk_config_validation():

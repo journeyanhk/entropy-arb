@@ -25,9 +25,18 @@
 #### 场景: 风控循环拉取
 - 预期结果: 有持仓返回 (mark, liq)；无持仓/无 mark 返回 None
 
+### 需求: 账户读 TTL 缓存（review2 R7）
+**模块:** venue_lighter
+`_account(cache_ttl=3.0)` 缓存账户快照（risk/balance/reconcile 循环叠加，合并重复请求）；`fetch_position(force=True)` 绕过缓存（force 对账必须读到新鲜仓位）。HL 侧 `fetch_position(force=False)` 为接口兼容参数。
+
+#### 场景: 循环叠加拉取
+- 预期结果: 3 s 内重复读复用缓存；force 对账强制新鲜读
+
 ## API接口
 - `LighterVenue._query_order(coi) -> Optional[dict]` REST 查单
 - `HLVenue.fetch_risk() / LighterVenue.fetch_risk()` 强平距离数据
+- `LighterVenue._account(cache_ttl=3.0)` 账户快照（TTL 缓存）
+- `HLVenue.fetch_position(force=False) / LighterVenue.fetch_position(force=False)` 持仓读取（force 绕过缓存）
 
 ## 依赖
 - book、config、feeds

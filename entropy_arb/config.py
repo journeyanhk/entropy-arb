@@ -130,6 +130,7 @@ class Config:
     drift_check_sec: float
     drift_halt_sec: float
     drift_band_factor: float
+    drift_auto_resume_sec: float
     risk_loop_sec: float
     liquidation_distance_pct: float
     margin_reserve_factor: float
@@ -204,6 +205,7 @@ _SCHEMA: Dict[str, Any] = {
         "drift_check_sec": float,
         "drift_halt_sec": float,
         "drift_band_factor": float,
+        "drift_auto_resume_sec": float,
         "risk_loop_sec": float,
         "liquidation_distance_pct": float,
         "margin_reserve_factor": float,
@@ -390,6 +392,8 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         drift_check_sec=float(_get(raw, "execution", "drift_check_sec", 60.0)),
         drift_halt_sec=float(_get(raw, "execution", "drift_halt_sec", 600.0)),
         drift_band_factor=float(_get(raw, "execution", "drift_band_factor", 1.0)),
+        drift_auto_resume_sec=float(_get(raw, "execution",
+                                         "drift_auto_resume_sec", 0.0)),
         risk_loop_sec=float(_get(raw, "execution", "risk_loop_sec", 30.0)),
         liquidation_distance_pct=liq_pct,
         margin_reserve_factor=margin_factor,
