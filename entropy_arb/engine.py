@@ -631,9 +631,12 @@ class Engine:
             log.warning("[HEDGE] exposure %+.6g not reduced (attempt %d, "
                         "slip %.0f bps) — retrying", net, attempt, slip_bps)
             await asyncio.sleep(cfg.hedge_retry_interval_sec)
-        # deadline hit or no venue to try: one last market-price attempt,
-        # then bound the tail — halt if real exposure remains
-        await self._hedge_once(0.0)
+        # deadline hit or no venue to try: one last force-close attempt with
+        # the WIDEST protection in the sequence (a zero-slip limit pins the
+        # order to the touch — the least likely market order to fill, the
+        # opposite of what the fallback needs). Real fills still happen at
+        # book levels, the wide limit only sets the worst accepted price.
+        await self._hedge_once(cfg.hedge_force_close_slip_bps / 1e4)
         residual = sum(v.position for v in self.venues.values())
         if abs(residual) <= cfg.net_tolerance_base:
             return

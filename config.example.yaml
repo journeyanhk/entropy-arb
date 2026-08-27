@@ -82,6 +82,7 @@ execution:
   hedge_retry_slips_bps: [20, 50, 100]  # widening slippage per hedge retry / 对冲重试递增滑点（bps）
   hedge_retry_interval_sec: 0.5         # gap between hedge retries / 对冲重试间隔
   hedge_force_close_timeout_sec: 5.0    # flatten-at-market + halt if exposure survives / 超时对价强平并停机
+  hedge_force_close_slip_bps: 200      # WIDEST protection for the last-chance flatten (slip=0 pins the touch — worst fill odds) / 兜底强平单的滑点必须最宽
   net_tolerance_base: 0.001   # max tolerated net delta (base units) / 允许的净敞口
   max_consecutive_errors: 3   # halt after N straight failures / 连续失败 N 次后停机
   rate_limit_pause_sec: 10.0  # pause a 429'd venue this long / 被限频后的暂停时长

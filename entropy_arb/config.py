@@ -120,6 +120,7 @@ class Config:
     hedge_retry_slips_bps: Tuple[float, ...]
     hedge_retry_interval_sec: float
     hedge_force_close_timeout_sec: float
+    hedge_force_close_slip_bps: float
     net_tolerance_base: float
     max_consecutive_errors: int
     rate_limit_pause_sec: float
@@ -200,6 +201,7 @@ _SCHEMA: Dict[str, Any] = {
         "hedge_retry_slips_bps": list,
         "hedge_retry_interval_sec": float,
         "hedge_force_close_timeout_sec": float,
+        "hedge_force_close_slip_bps": float,
         "net_tolerance_base": float,
         "max_consecutive_errors": int,
         "rate_limit_pause_sec": float,
@@ -388,6 +390,11 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         raise ConfigError("execution.hedge_retry_slips_bps must be a "
                           "non-empty list of positive bps / 对冲重试滑点"
                           "必须是正数列表")
+    force_slip = float(_get(raw, "execution", "hedge_force_close_slip_bps",
+                            200.0))
+    if force_slip <= 0:
+        raise ConfigError("execution.hedge_force_close_slip_bps must be > 0 "
+                          "/ 强平滑点必须为正")
 
     return Config(
         symbol=symbol,
@@ -413,6 +420,7 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         hedge_force_close_timeout_sec=float(_get(raw, "execution",
                                                  "hedge_force_close_timeout_sec",
                                                  5.0)),
+        hedge_force_close_slip_bps=force_slip,
         net_tolerance_base=float(_get(raw, "execution", "net_tolerance_base", 0.001)),
         max_consecutive_errors=int(_get(raw, "execution", "max_consecutive_errors", 3)),
         rate_limit_pause_sec=float(_get(raw, "execution", "rate_limit_pause_sec", 10.0)),

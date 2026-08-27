@@ -7,6 +7,7 @@
 ## [Unreleased]
 
 ### 新增
+- 兜底强平单使用最宽滑点（review4 P0）：新增 `hedge_force_close_slip_bps`（默认 200）；此前 `_hedge_once(0.0)` 零滑点保护价钉死盘口最优价，恰是全流程最不易成交的一单
 - 裸露敞口有界快速重试（review3 P0-1）：`_hedge` 递增滑点重试（20→50→100 bps、0.5 s 间隔）＋`hedge_force_close_timeout_sec`（5 s）超时后对价最后一搏；残留低于可对冲最小量 carry，否则 HALT+告警——单腿失败尾部损失从"未知"变"有界"
 - 新增执行配置键 3 个（hedge_retry_slips_bps 列表类型 / hedge_retry_interval_sec / hedge_force_close_timeout_sec）；schema 新增 list 类型校验
 - 一期修复复查轮（review2 R1–R7，2026-08-27）：

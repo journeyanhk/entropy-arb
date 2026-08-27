@@ -448,8 +448,12 @@ def test_hedge_force_close_halts_after_timeout():
     eng.entropy.send_taker = fake_send
     asyncio.run(eng._hedge())
     assert eng.halted                          # exposure could not be bounded
-    assert len(calls) >= 3                     # retries + market-price last shot
+    assert len(calls) >= 3                     # retries + force-close last shot
     assert eng.entropy.position == 0.3         # nothing filled
+    # the last-chance order carries the WIDEST protection (200 bps = 98.0),
+    # not a zero-slip limit pinned to the touch (100.0)
+    assert calls[-1][2] < calls[-2][2]
+    assert calls[-1][2] <= 98.0 + 1e-6
 
 
 def test_hedge_small_residual_carries_not_halts():
