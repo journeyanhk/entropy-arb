@@ -367,6 +367,64 @@ def test_liquidation_halts_before_flatten():
     assert order == [("flatten", True)]   # halted was set BEFORE flattening
 
 
+def test_status_loop_log_format(capsys):
+    """The [status] line must format cleanly (placeholder/arg mismatch would
+    raise inside the logging handler)."""
+    eng = make_engine()
+    eng.entropy.set_book(100.0, 100.02)
+    eng.hedge.set_book(99.99, 100.01)
+    eng.entropy.position, eng.hedge.position = 0.1, -0.1
+    eng._drift_halted = True
+    eng.halted = True
+    eng.cfg.status_interval_sec = 0.01
+
+    async def go():
+        task = asyncio.create_task(eng._status_loop())
+        await asyncio.sleep(eng.cfg.status_interval_sec + 0.05)
+        eng.request_stop()
+        task.cancel()
+        with __import__("contextlib").suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(go())
+    err = capsys.readouterr().err
+    assert "Logging error" not in err
+    assert "not all arguments converted" not in err
+
+
+def test_log_placeholders_match_args():
+    """Static guard: every %-style log call in the package must have exactly
+    as many arguments as placeholders (catches the class of bug where a
+    marker arg is added without its %s)."""
+    import ast
+    import re
+    import pathlib
+
+    root = pathlib.Path(os.path.join(os.path.dirname(__file__), "..",
+                                     "entropy_arb"))
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("debug", "info", "warning",
+                                           "error", "critical", "exception")):
+                continue
+            if not node.args or not isinstance(node.args[0], ast.Constant) \
+                    or not isinstance(node.args[0].value, str):
+                continue
+            fmt = node.args[0].value
+            # %% is a literal percent: strip it before matching so the
+            # flags class can never span across a "%% word" pair
+            n = len(re.findall(r"%(?:\d+\$)?[-+ #0]*\d*(?:\.\d+)?"
+                               r"[diouxXeEfFgGcrsa]", fmt.replace("%%", "")))
+            if n != len(node.args) - 1:
+                raise AssertionError(
+                    f"{path.name}:{node.lineno} log.{node.func.attr} has "
+                    f"{n} placeholders but {len(node.args) - 1} args: "
+                    f"{fmt[:70]}")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

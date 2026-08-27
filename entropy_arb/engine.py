@@ -1086,7 +1086,7 @@ class Engine:
                    if self.recorder else "")
             log.info("[status] %s | prem %s bps (band %+.2f..%+.2f) | pos %s "
                      "net %+.6g | trades %d hedges %d | MTM %s expEdge $%.4f "
-                     "fillEdge $%.4f%s%s",
+                     "fillEdge $%.4f%s%s%s",
                      books, prem_s, cfg.midline_bps - cfg.lower_bps,
                      cfg.midline_bps + cfg.upper_bps, pos, net, self.trades,
                      self.hedges,
