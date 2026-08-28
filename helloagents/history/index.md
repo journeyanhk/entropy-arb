@@ -12,6 +12,7 @@
 | 202608271034 | review2-fixes | 修复/加固 | ✅已完成 | [链接](2026-08/202608271034_review2-fixes/) |
 | 202608271754 | p0-hedge-bounded-retry | 修复/加固 | ✅已完成 | [链接](2026-08/202608271754_p0-hedge-bounded-retry/) |
 | 202608271932 | p0-forceclose-slip | 修复/加固 | ✅已完成 | [链接](2026-08/202608271932_p0-forceclose-slip/) |
+| 202608280833 | web-dashboard-serverchan | 功能 | ✅已完成 | [链接](2026-08/202608280833_web-dashboard-serverchan/) |
 
 ---
 
@@ -23,3 +24,4 @@
 - [202608271034_review2-fixes](2026-08/202608271034_review2-fixes/) - 复查修复轮：force 双读确认、强平先停机、drift 减仓钳制、漂移自动恢复、shutdown 窗口、账户缓存
 - [202608271754_p0-hedge-bounded-retry](2026-08/202608271754_p0-hedge-bounded-retry/) - P0-1 裸露敞口有界快速重试：递增滑点、超时对价强平、残留 carry/停机分级
 - [202608271932_p0-forceclose-slip](2026-08/202608271932_p0-forceclose-slip/) - P0 强平单滑点修复：兜底单用最宽保护价（200 bps），零滑点钉死盘口价反而最不易成交
+- [202608280833_web-dashboard-serverchan](2026-08/202608280833_web-dashboard-serverchan/) - Web 状态面板（引擎内嵌 HTML+JSON）+ Server酱告警通道（dev 分支）

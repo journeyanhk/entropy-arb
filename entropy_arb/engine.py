@@ -23,6 +23,7 @@ from collections import deque
 from typing import Dict, List, Optional
 
 import aiohttp
+from aiohttp import web
 
 from .book import ArbPlan, floor_step, plan_arb
 from .config import Config
@@ -30,6 +31,7 @@ from .notifier import Notifier
 from .recorder import MinuteRecorder
 from .venue_hl import HLVenue
 from .venue_lighter import LighterVenue
+from .webui import PAGE_HTML, status_payload
 
 log = logging.getLogger("engine")
 
@@ -233,6 +235,9 @@ class Engine:
         if self.notifier.enabled:
             tasks.append(asyncio.create_task(self.notifier.run(self.session),
                                              name="notify"))
+        if cfg.web_dashboard_enabled:
+            tasks.append(asyncio.create_task(self._web_loop(),
+                                             name="webdash"))
         tasks.append(asyncio.create_task(self._status_loop(), name="status"))
         if live:
             tasks.append(asyncio.create_task(self._reconcile_loop(),
@@ -1141,6 +1146,39 @@ class Engine:
         if not (em and hm):
             return None
         return (em / hm - 1.0) * 1e4
+
+    async def _web_loop(self) -> None:
+        """Embedded HTTP status dashboard (GET / and /api/status). Never
+        interrupts trading: bind failure is logged and the loop exits."""
+        cfg = self.cfg
+
+        async def index(request):
+            return web.Response(text=PAGE_HTML, content_type="text/html")
+
+        async def api_status(request):
+            return web.json_response(status_payload(self))
+
+        app = web.Application()
+        app.router.add_get("/", index)
+        app.router.add_get("/api/status", api_status)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, cfg.web_dashboard_host,
+                               cfg.web_dashboard_port)
+            await site.start()
+        except Exception as e:
+            log.warning("[web] dashboard bind %s:%d failed: %r — trading "
+                        "unaffected", cfg.web_dashboard_host,
+                        cfg.web_dashboard_port, e)
+            await runner.cleanup()
+            return
+        log.info("[web] dashboard http://%s:%d", cfg.web_dashboard_host,
+                 cfg.web_dashboard_port)
+        try:
+            await self.stop.wait()
+        finally:
+            await runner.cleanup()
 
     async def _status_loop(self) -> None:
         cfg = self.cfg

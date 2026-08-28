@@ -38,6 +38,7 @@ class StubVenue:
         self.size_decimals, self.min_base, self.min_quote = 4, 1e-4, 10.0
         self.position, self.cash = 0.0, 0.0
         self.volume_usd = 0.0
+        self.equity = None
         self.orders_per_min = 30
         self.last_traded_ts = 0.0
         self.free = None
@@ -466,6 +467,39 @@ def test_hedge_small_residual_carries_not_halts():
     eng.cfg.hedge_retry_interval_sec = 0.01
     asyncio.run(eng._hedge())
     assert not eng.halted                      # dust carries, no false halt
+
+
+def test_status_payload_fields():
+    from entropy_arb.webui import status_payload
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    eng.entropy.position, eng.hedge.position = 0.1, -0.1
+    eng.entropy.free = eng.hedge.free = 50.0
+    eng.trades = 3
+    eng.halted = True
+    eng._drift_halted = True
+    p = status_payload(eng)
+    assert p["symbol"] == "SNDK" and p["hedge_name"] == "RH"
+    assert p["halted"] is True and p["drift_halted"] is True
+    assert p["midline_bps"] == 5.0
+    assert p["band_low"] == 2.0 and p["band_high"] == 9.0
+    assert p["premium_bps"] is not None
+    assert len(p["venues"]) == 2
+    v = p["venues"][0]
+    for k in ("name", "bid", "ask", "spread_bps", "data_age", "position",
+              "equity", "free", "volume_usd", "cap_usd", "stale", "down",
+              "limited", "unresolved"):
+        assert k in v
+    assert len(p["directions"]) == 2
+    for d in p["directions"]:
+        assert d["label"] and "premium" in d and "hurdle" in d
+        assert "armed" in d
+    assert p["trades"] == 3
+    assert p["net_delta"] == 0.0
+    assert p["recent_trades"] == []
+    assert p["premium_history"] == []
+    assert p["uptime_sec"] >= 0
 
 
 def test_status_loop_log_format(capsys):

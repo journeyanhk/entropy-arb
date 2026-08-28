@@ -148,6 +148,10 @@ class Config:
     trades_csv: str
     dashboard: bool
     log_file: str
+    # web status dashboard
+    web_dashboard_enabled: bool
+    web_dashboard_host: str
+    web_dashboard_port: int
     # runtime
     hl_api_url: str = HL_API_URL
     hl_ws_url: str = HL_WS_URL
@@ -230,6 +234,11 @@ _SCHEMA: Dict[str, Any] = {
         "trades_csv": str,
         "dashboard": bool,
         "file": str,
+    },
+    "web_dashboard": {
+        "enabled": bool,
+        "host": str,
+        "port": int,
     },
 }
 
@@ -396,6 +405,13 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         raise ConfigError("execution.hedge_force_close_slip_bps must be > 0 "
                           "/ 强平滑点必须为正")
 
+    web_enabled = bool(_get(raw, "web_dashboard", "enabled", True))
+    web_host = str(_get(raw, "web_dashboard", "host", "127.0.0.1"))
+    web_port = int(_get(raw, "web_dashboard", "port", 8787))
+    if not 0 < web_port < 65536:
+        raise ConfigError("web_dashboard.port must be in (0, 65536) / "
+                          "面板端口非法")
+
     return Config(
         symbol=symbol,
         hedge_venue=hedge_venue,
@@ -446,4 +462,7 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         trades_csv=_get(raw, "logging", "trades_csv", "logs/trades.csv"),
         dashboard=bool(_get(raw, "logging", "dashboard", True)),
         log_file=_get(raw, "logging", "file", "logs/engine.log"),
+        web_dashboard_enabled=web_enabled,
+        web_dashboard_host=web_host,
+        web_dashboard_port=web_port,
     )

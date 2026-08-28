@@ -128,3 +128,16 @@ logging:
   trades_csv: logs/trades.csv
   dashboard: true
   file: logs/engine.log
+
+# ================== WEB DASHBOARD / Web 状态面板 ============================
+# Embedded HTTP status page (single-file HTML, 1s polling):
+#   http://127.0.0.1:8787        page
+#   http://127.0.0.1:8787/api/status   JSON
+# Binds localhost by default — put nginx/caddy + basic auth in front before
+# exposing it publicly (the page shows account balances).
+# 引擎内嵌 Web 状态面板。默认只绑本机回环地址；如要公网访问，请用 nginx 反代
+# 加认证后再暴露（页面包含账户资金信息）。
+web_dashboard:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787

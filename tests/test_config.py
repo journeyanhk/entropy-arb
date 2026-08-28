@@ -149,6 +149,34 @@ execution:
     assert cfg.hedge_force_close_slip_bps == 300.0
 
 
+def test_web_dashboard_defaults():
+    cfg = load(MINIMAL)
+    assert cfg.web_dashboard_enabled is True
+    assert cfg.web_dashboard_host == "127.0.0.1"
+    assert cfg.web_dashboard_port == 8787
+
+
+def test_web_dashboard_override():
+    cfg = load(MINIMAL + """
+web_dashboard:
+  enabled: false
+  host: 0.0.0.0
+  port: 9090
+""")
+    assert cfg.web_dashboard_enabled is False
+    assert cfg.web_dashboard_host == "0.0.0.0"
+    assert cfg.web_dashboard_port == 9090
+
+
+def test_web_dashboard_validation():
+    expect_error(MINIMAL + "\nweb_dashboard:\n  port: 0\n",
+                 "web_dashboard.port")
+    expect_error(MINIMAL + "\nweb_dashboard:\n  port: 70000\n",
+                 "web_dashboard.port")
+    expect_error(MINIMAL + "\nweb_dashboard:\n  enabled: maybe\n",
+                 "web_dashboard.enabled")
+
+
 def test_risk_config_validation():
     expect_error(MINIMAL + "\nexecution:\n  liquidation_distance_pct: 0\n",
                  "liquidation_distance_pct")

@@ -1,15 +1,26 @@
 # API 手册
 
 ## 概述
-机器人对外部交易所的调用面。内部模块间为 Python 方法调用（见各模块文档）。
+机器人对外部交易所的调用面。内部模块间为 Python 方法调用（见各模块文档）。引擎内嵌 Web 状态面板（`web_dashboard` 配置节，默认 127.0.0.1:8787）。
 
 ## 认证方式
 - Hyperliquid: agent 钱包签名（eth_account + hyperliquid-sdk）
 - Lighter: api_private_key 签名；REST 查询（accountOrders）需 authorization 头 = `signer.create_auth_token_with_expiry()`
+- 告警通道: Telegram（bot token）/ Server酱（SendKey），任一配置即启用
 
 ---
 
 ## 接口列表
+
+### Web 状态面板（engine 内嵌 aiohttp）
+
+#### [GET] /
+**描述:** 单文件 HTML 状态页（无外部依赖，1s 轮询 /api/status）
+**注意:** 默认绑 127.0.0.1；公网暴露需反代 + 认证（页面含账户资金）
+
+#### [GET] /api/status
+**描述:** 实时状态 JSON（`webui.status_payload` 组装，无网络）
+**响应:** ts/symbol/halted/drift_halted/stale/venue_down/premium_bps/midline_bps/band_low/band_high/premium_history/venues[](name,bid,ask,spread_bps,data_age,position,equity,free,stale,down,limited,unresolved)/directions[](label,premium,hurdle,armed)/net_delta/mtm_pnl/account_delta/total_equity/exp_edge/fill_edge/trades/hedges/consec_errors/recorder_rows/last_trade_ago/uptime_sec/recent_trades[]
 
 ### Hyperliquid（venue_hl.py）
 
@@ -36,11 +47,15 @@
 {"code": 0, "orders": [{"client_order_index": 123, "status": "filled", "filled_base_amount": "5", "filled_quote_amount": "500", ...}]}
 ```
 
-### Telegram（notifier.py）
+### Telegram / Server酱（notifier.py）
 
 #### [POST] https://api.telegram.org/bot{token}/sendMessage
-**描述:** 告警推送（HALT/对冲失败/漂移哨兵/强平告警）
+**描述:** Telegram 告警（HALT/对冲失败/漂移哨兵/强平告警）
 **请求参数:** `chat_id`、`text`（队列化，失败重试 1 次，不阻塞引擎）
+
+#### [POST] https://sctapi.ftqq.com/{sendkey}.send
+**描述:** Server酱告警（仅需 SendKey，推送到微信）
+**请求参数:** `title`（正文首行）、`desp`（完整消息）；响应 `code=0` 为成功
 
 ---
 

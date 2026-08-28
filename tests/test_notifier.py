@@ -16,20 +16,23 @@ from entropy_arb.venue_lighter import LighterVenue  # noqa: E402
 
 
 def test_disabled_without_credentials():
-    n = Notifier(None, None)
+    from entropy_arb.notifier import ServerChanChannel, TelegramChannel
+    n = Notifier([TelegramChannel(None, None), ServerChanChannel(None)])
     assert not n.enabled
     n.send("anything")          # no-op, no queue, no exception
 
 
 def test_enabled_flag_and_queue():
-    n = Notifier("tok", "123")
+    from entropy_arb.notifier import TelegramChannel
+    n = Notifier([TelegramChannel("tok", "123")])
     assert n.enabled
     n.send("hi")
     assert n._queue.qsize() == 1
 
 
 def test_queue_full_drops():
-    n = Notifier("tok", "123", max_queue=2)
+    from entropy_arb.notifier import TelegramChannel
+    n = Notifier([TelegramChannel("tok", "123")], max_queue=2)
     n.send("1")
     n.send("2")
     n.send("3")
@@ -127,6 +130,80 @@ def test_query_order_bad_status_ignored():
     info = asyncio.run(v._query_order(5))
     assert info["status"] == "filled" and info["filled_base"] == 0.0
     assert info["avg_px"] is None
+
+
+def test_serverchan_channel():
+    from entropy_arb.notifier import ServerChanChannel
+    assert not ServerChanChannel(None).enabled
+    assert not ServerChanChannel("").enabled
+    c = ServerChanChannel("sct-key-123")
+    assert c.enabled and c.name == "serverchan"
+
+
+def test_notifier_aggregates_channels():
+    from entropy_arb.notifier import (ServerChanChannel,
+                                      TelegramChannel)
+    # only serverchan configured: still enabled, single channel
+    n = Notifier([TelegramChannel(None, None),
+                  ServerChanChannel("sct-key-123")])
+    assert n.enabled
+    assert [c.name for c in n._channels] == ["serverchan"]
+    # neither configured: silent no-op
+    n2 = Notifier([TelegramChannel(None, None), ServerChanChannel(None)])
+    assert not n2.enabled
+
+
+class FakePostCtx:
+    def __init__(self, status, body="ok"):
+        self.status = status
+        self._body = body
+        self._json = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def text(self):
+        return self._body
+
+    async def json(self):
+        return self._json or {"code": 0}
+
+
+class FakePostSession:
+    def __init__(self, status=200, body="ok", json_body=None):
+        self._status = status
+        self._body = body
+        self._json = json_body
+        self.calls = []
+
+    def post(self, url, **kw):
+        self.calls.append((url, kw))
+        return FakePostCtx(self._status, self._body)
+
+
+def test_serverchan_post_builds_request():
+    from entropy_arb.notifier import ServerChanChannel
+    c = ServerChanChannel("sct-key-123")
+    s = FakePostSession()
+    asyncio.run(c.post(s, "标题行\n详情第一行\n详情第二行"))
+    url, kw = s.calls[0]
+    assert url == "https://sctapi.ftqq.com/sct-key-123.send"
+    assert kw["data"]["title"] == "标题行"
+    assert "详情第一行" in kw["data"]["desp"]
+
+
+def test_serverchan_post_failure_raises():
+    from entropy_arb.notifier import ServerChanChannel
+    c = ServerChanChannel("sct-key-123")
+    # HTTP 500 -> raise (Notifier retries once)
+    try:
+        asyncio.run(c.post(FakePostSession(status=500), "x"))
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError:
+        pass
 
 
 class CountingSession:

@@ -17,12 +17,12 @@ execution 段新增 8 键（均带默认值）：`data_staleness_sec: 60`、`dri
 #### 场景: 加载一期配置
 - 预期结果: 新键生效；非法值启动报错
 
-### 需求: Telegram 告警（⑥）
+### 需求: Telegram / Server酱 告警（⑥ + review4）
 **模块:** notifier
-`Notifier(token, chat_id)` + asyncio 队列 + 单 worker；`https://api.telegram.org/bot<token>/sendMessage`，失败重试 1 次，队列满（64）丢弃并记日志。`from_env()` 读 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`；无凭据时静默 no-op。engine 在 HALT、对冲失败、漂移哨兵、强平告警四点 `send()`。
+多通道：`TelegramChannel`（bot token + chat id）、`ServerChanChannel`（`SERVERCHAN_SENDKEY` 一行配置）。`Notifier.from_env()` 聚合启用的通道；队列化、失败重试 1 次、队列满（64）丢弃；无任何凭据时静默 no-op。engine 在 HALT、对冲失败、漂移哨兵、强平告警、未削平停机等点 `send()`。
 
 #### 场景: 停机或风险事件
-- 预期结果: Telegram 推送；发送失败只记日志不阻塞引擎
+- 预期结果: 配置的通道全部推送；发送失败只记日志不阻塞引擎
 
 ### 需求: 数据帧新鲜度采样（P1-5）
 **模块:** recorder
