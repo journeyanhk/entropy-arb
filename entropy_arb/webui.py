@@ -312,6 +312,15 @@ function drawSpark(vals) {
   ctx.font = '10px monospace';
   ctx.fillText(lo.toFixed(2) + ' … ' + hi.toFixed(2) + ' bps', 6, h - 4);
 }
+async function tick() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    render(s);
+  } catch (e) {
+    $('badge').textContent = '连接断开';
+    $('badge').className = 'badge b-stop';
+  }
+}
 initTheme();
 setInterval(tick, 1000);
 tick();
