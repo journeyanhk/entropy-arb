@@ -42,6 +42,20 @@ class LighterProfile:
     chain_id: int
 
 
+@dataclass(frozen=True)
+class SlippageConf:
+    enabled: bool
+    state_file: str
+    min_samples: int
+    window_n: int
+    window_hours: float
+    gate_weight: float
+    protect_mult: float
+    protect_floor_bps: float
+    protect_cap_bps: float
+    miss_threshold: float
+
+
 # Endpoint profiles for the two supported zkLighter deployments (these match
 # lighter-python's lighter.endpoint_profiles, duplicated here so --record-only
 # data collection works without the SDK installed).
@@ -154,6 +168,8 @@ class Config:
     web_dashboard_enabled: bool
     web_dashboard_host: str
     web_dashboard_port: int
+    # slippage model (二期③)
+    slippage: SlippageConf
     # runtime
     hl_api_url: str = HL_API_URL
     hl_ws_url: str = HL_WS_URL
@@ -243,6 +259,18 @@ _SCHEMA: Dict[str, Any] = {
         "enabled": bool,
         "host": str,
         "port": int,
+    },
+    "slippage": {
+        "enabled": bool,
+        "state_file": str,
+        "min_samples": int,
+        "window_n": int,
+        "window_hours": float,
+        "gate_weight": float,
+        "protect_mult": float,
+        "protect_floor_bps": float,
+        "protect_cap_bps": float,
+        "miss_threshold": float,
     },
 }
 
@@ -423,6 +451,24 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
     if not 0 < web_port < 65536:
         raise ConfigError("web_dashboard.port must be in (0, 65536) / "
                           "面板端口非法")
+    slip_min = int(_get(raw, "slippage", "min_samples", 30))
+    slip_cap = float(_get(raw, "slippage", "protect_cap_bps", 30.0))
+    if slip_min < 1:
+        raise ConfigError("slippage.min_samples must be >= 1 / 冷启动样本数非法")
+    if slip_cap <= 0:
+        raise ConfigError("slippage.protect_cap_bps must be > 0 / 保护价上限非法")
+    slippage = SlippageConf(
+        enabled=bool(_get(raw, "slippage", "enabled", True)),
+        state_file=_get(raw, "slippage", "state_file", "logs/slip_state.json"),
+        min_samples=slip_min,
+        window_n=int(_get(raw, "slippage", "window_n", 200)),
+        window_hours=float(_get(raw, "slippage", "window_hours", 72.0)),
+        gate_weight=float(_get(raw, "slippage", "gate_weight", 1.0)),
+        protect_mult=float(_get(raw, "slippage", "protect_mult", 1.5)),
+        protect_floor_bps=float(_get(raw, "slippage", "protect_floor_bps", 10.0)),
+        protect_cap_bps=slip_cap,
+        miss_threshold=float(_get(raw, "slippage", "miss_threshold", 0.15)),
+    )
 
     return Config(
         symbol=symbol,
@@ -479,4 +525,5 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         web_dashboard_enabled=web_enabled,
         web_dashboard_host=web_host,
         web_dashboard_port=web_port,
+        slippage=slippage,
     )

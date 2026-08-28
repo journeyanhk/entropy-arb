@@ -25,6 +25,7 @@
 | engine | 策略循环、执行、对账、对冲、风控、漂移哨兵 | ✅稳定 | [engine.md](modules/engine.md) |
 | venue_hl / venue_lighter | Hyperliquid / zkLighter 适配器（行情/账户/下单/结算） | ✅稳定 | [venue.md](modules/venue.md) |
 | book / feeds | 盘口状态与定价；WebSocket 行情源 | ✅稳定 | [book-feeds.md](modules/book-feeds.md) |
+| slippage | 实测滑点模型：开仓门槛 + 自适应保护价（二期③） | 🚧开发中 | [slippage.md](modules/slippage.md) |
 | webui | Web 状态面板（HTML 页 + /api/status JSON，引擎内嵌） | ✅稳定 | [webui.md](modules/webui.md) |
 | config / recorder / notifier / dashboard | 配置校验、分钟采样、告警（Telegram/Server酱）、仪表盘 | ✅稳定 | [config-recorder-notifier-dashboard.md](modules/config-recorder-notifier-dashboard.md) |
 

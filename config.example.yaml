@@ -107,6 +107,27 @@ execution:
   funding_cap_bps: 5.0        # funding gate cap added to OPENING hurdles (P1-3); reducing trades never gated / 开仓门槛的 funding 上限（减仓不受影响）
   funding_hold_hours: 4.0    # assumed hold time when pricing funding into the hurdle (hours) / 折算 funding 成本用的预期持仓时长（小时）
 
+# ================== SLIPPAGE MODEL / 滑点动态管理（二期③）==================
+# Adaptive realized-slippage model feeding two decision points:
+#   ① an OPENING-side hurdle: the whole round trip (open+close, 4 legs) is
+#      charged at open time — reducing trades are never priced out by slip
+#   ② per-leg price protection: clamp(p90*protect_mult, floor, cap); the cap
+#      defaults to the current static width (30) so week one can only TIGHTEN
+# cold-start (<min_samples) falls back to static behaviour.
+# 滑点动态模型：①开仓门槛一次扣掉整个往返（开+平 4 腿）预期滑点，减仓永不
+# 被滑点卡住；②每腿保护价按自身分布自适应 clamp。样本不足回退静态行为。
+slippage:
+  enabled: true                # master switch / 总开关（默认开，纯改进）
+  state_file: logs/slip_state.json   # persisted state / 状态持久化文件
+  min_samples: 30              # cold-start threshold / 冷启动样本阈值
+  window_n: 200                # max samples kept per venue / 每腿最大样本数
+  window_hours: 72.0           # ...and max age (hours) / 样本最大时效（小时）
+  gate_weight: 1.0             # round-trip slip gate multiplier / 门槛系数
+  protect_mult: 1.5            # protection = p90 × this / 保护价 = p90 倍数
+  protect_floor_bps: 10.0      # protection clamp floor / 保护价下限
+  protect_cap_bps: 30.0        # protection clamp cap — week one = static(30), only tightens / 保护价上限（首周=静态值，只许收紧）
+  miss_threshold: 0.15         # miss-rate hint surfaced in webui / miss 率阈值（仅展示，作放宽决策依据）
+
 # ================== DATA RECORDER / 数据采集 ===============================
 # Always-on while the bot runs: samples both real order books 1/sec and
 # writes one CSV row per minute. This is the input for tools/analyze.py.

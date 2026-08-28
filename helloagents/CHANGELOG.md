@@ -7,7 +7,12 @@
 ## [Unreleased]
 
 ### 新增
-- review5 部署前修复（dev 分支）：
+- 二期③ 滑点动态管理（dev-gen2 分支）：
+  - 新增 `entropy_arb/slippage.py` `SlipModel`：按 (venue,symbol) 维护实测滑点，滚动分位（200 笔 ∩ 72h 时间窗）、冷启动回退（<min_samples）、负滑点门槛侧截断、miss-rate 幸存者偏差统计、状态持久化（20 次落盘 + shutdown）
+  - 开仓门槛：`_eff_threshold` 对开仓方向加整个往返预期滑点 `(p50_buy+p50_sell)×2×gate_weight`（减仓永不卡）
+  - 自适应保护价：每腿 `clamp(p90×protect_mult, floor, cap)`，首周 `protect_cap_bps:30` 只许收紧；trades.csv 加 `dyn_protect_buy/sell_bps` shadow 对照列
+  - webui：方向门槛 `hurdle_breakdown`（base/inventory/funding/slip_gate 分解）+ venues miss_rate
+  - 新增 config 节 `slippage`（enabled/state_file/min_samples/window_n/window_hours/gate_weight/protect_mult/protect_floor_bps/protect_cap_bps/miss_threshold）
   - funding 口径归一化：两所 funding 均为 8h 口径（HL 每小时支付其 1/8，查证 HL/Lighter 官方文档），统一归一化为 bps/hour（÷8）；`_funding_cost_bps` 成本 = 不利侧小时费率 × `funding_hold_hours`（新增配置，默认 4.0）——修复原实现隐含"持仓满 8h"导致短期成本高估 8 倍
   - signal_age 传值：`_scan` 返回 `(buy, sell, plan, armed_ts)` 四元组，`_execute` 用本轮武装时间戳计算 age，修复连续边际下 age 跨笔累积
 - P1 三项（dev 分支）：

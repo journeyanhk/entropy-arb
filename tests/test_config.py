@@ -183,6 +183,53 @@ def test_web_dashboard_validation():
                  "web_dashboard.enabled")
 
 
+def test_slippage_section_defaults():
+    cfg = load(MINIMAL)
+    s = cfg.slippage
+    assert s.enabled is True
+    assert s.state_file == "logs/slip_state.json"
+    assert s.min_samples == 30
+    assert s.window_n == 200
+    assert s.window_hours == 72.0
+    assert s.gate_weight == 1.0
+    assert s.protect_mult == 1.5
+    assert s.protect_floor_bps == 10.0
+    assert s.protect_cap_bps == 30.0
+    assert s.miss_threshold == 0.15
+
+
+def test_slippage_section_override():
+    cfg = load(MINIMAL + """
+slippage:
+  enabled: false
+  state_file: /tmp/slip.json
+  min_samples: 50
+  window_n: 300
+  window_hours: 48.0
+  gate_weight: 1.5
+  protect_mult: 2.0
+  protect_floor_bps: 12.0
+  protect_cap_bps: 40.0
+  miss_threshold: 0.2
+""")
+    s = cfg.slippage
+    assert s.enabled is False
+    assert s.state_file == "/tmp/slip.json"
+    assert s.min_samples == 50 and s.window_n == 300
+    assert s.window_hours == 48.0 and s.gate_weight == 1.5
+    assert s.protect_mult == 2.0 and s.protect_floor_bps == 12.0
+    assert s.protect_cap_bps == 40.0 and s.miss_threshold == 0.2
+
+
+def test_slippage_validation():
+    expect_error(MINIMAL + "\nslippage:\n  min_samples: 0\n",
+                 "slippage.min_samples")
+    expect_error(MINIMAL + "\nslippage:\n  protect_cap_bps: 0\n",
+                 "slippage.protect_cap_bps")
+    expect_error(MINIMAL + "\nslippage:\n  enabled: maybe\n",
+                 "slippage.enabled")
+
+
 def test_risk_config_validation():
     expect_error(MINIMAL + "\nexecution:\n  liquidation_distance_pct: 0\n",
                  "liquidation_distance_pct")

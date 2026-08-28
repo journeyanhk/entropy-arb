@@ -659,6 +659,63 @@ def test_funding_gate_capped_and_missing_rates_ignored():
     approx(eng._eff_threshold(buy=h, sell=e), 9.0)
 
 
+def test_slippage_gate_only_on_opening_direction():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    from entropy_arb.slippage import SlipModel
+    eng.slippage = SlipModel(min_samples=3)
+    # both legs with known p50 = 2 bps -> round-trip gate = (2+2)*2 = 8
+    for i in range(3):
+        eng.slippage.observe("entropy", "SNDK", 2.0, 1.0, 1.0)
+        eng.slippage.observe("hedge", "SNDK", 2.0, 1.0, 1.0)
+    e, h = eng.entropy, eng.hedge
+    # flat: both directions opening -> gate charged
+    assert abs(eng._eff_threshold(buy=h, sell=e) - (9.0 + 8.0)) < 1e-9
+    # an inventory this direction reduces -> no slip gate
+    e.position = 10.0
+    h.position = -10.0
+    assert abs(eng._eff_threshold(buy=h, sell=e) - 9.0) < 1e-9
+
+
+def test_slippage_disabled_no_gate_no_model():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.slippage = None                 # disabled path -> no model, no gate
+    assert abs(eng._eff_threshold(buy=eng.hedge, sell=eng.entropy)
+               - 9.0) < 1e-9
+
+
+def test_hurdle_breakdown_exposes_parts():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    p = eng._hurdle_breakdown(buy=eng.hedge, sell=eng.entropy)
+    assert set(p) == {"base", "inventory", "funding", "slip_gate"}
+    assert p["base"] == 9.0 and p["inventory"] == 0.0
+    assert p["funding"] == 0.0 and p["slip_gate"] == 0.0
+    # reconstruct matches _eff_threshold
+    assert abs(eng._eff_threshold(buy=eng.hedge, sell=eng.entropy)
+               - (p["base"] + p["inventory"] + p["funding"] + p["slip_gate"])
+               ) < 1e-9
+
+
+def test_trades_csv_shadow_columns_present():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    path = os.path.join(tempfile.mkdtemp(), "trades.csv")
+    eng.cfg.trades_csv = path
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    plan, reason = eng._plan(eng.hedge, eng.entropy, 500.0)
+    assert reason == "ok"
+    from entropy_arb.engine import CSV_HEADER
+    eng._log_csv("sell_entropy", eng.hedge, eng.entropy, plan, True,
+                 0.5, 0.5, "filled", "filled", 0.5, 1.0,
+                 12.3, 45.6, 2.1, 1.5, 0.8, 25.0, 27.0)
+    with open(path, newline="") as fh:
+        import csv as _csv
+        rows = list(_csv.reader(fh))
+    assert rows[0] == CSV_HEADER
+    assert len(rows[1]) == len(CSV_HEADER)
+    assert rows[1][-2:] == ["25.000", "27.000"]
+    assert "dyn_protect_buy_bps" in CSV_HEADER
+
+
 def test_trades_csv_row_width_matches_header():
     eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
     path = os.path.join(tempfile.mkdtemp(), "trades.csv")

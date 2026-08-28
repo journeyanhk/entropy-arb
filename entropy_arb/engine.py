@@ -29,6 +29,7 @@ from .book import ArbPlan, floor_step, plan_arb
 from .config import Config
 from .notifier import Notifier
 from .recorder import MinuteRecorder
+from .slippage import SlipModel
 from .venue_hl import HLVenue
 from .venue_lighter import LighterVenue
 from .webui import PAGE_HTML, status_payload
@@ -41,7 +42,7 @@ CSV_HEADER = ["ts", "direction", "buy_venue", "sell_venue", "qty",
               "midline_bps", "inv_add_bps", "ok", "buy_fill", "sell_fill",
               "buy_status", "sell_status", "fill_edge_usd",
               "buy_lat_ms", "sell_lat_ms", "slip_buy_bps", "slip_sell_bps",
-              "signal_age_sec"]
+              "signal_age_sec", "dyn_protect_buy_bps", "dyn_protect_sell_bps"]
 BALANCE_POLL_SEC = 30.0
 FORCE_RECONCILE_GRACE_SEC = 3.0
 
@@ -108,6 +109,20 @@ class Engine:
         self._drift_back_since: Optional[float] = None
         # telegram alerts (no-op without credentials)
         self.notifier = Notifier.from_env()
+        # realized-slippage model (二期③); None when disabled
+        self.slippage: Optional[SlipModel] = None
+        if cfg.slippage.enabled:
+            sc = cfg.slippage
+            self.slippage = SlipModel(
+                state_file=sc.state_file, window_n=sc.window_n,
+                window_hours=sc.window_hours, min_samples=sc.min_samples,
+                miss_threshold=sc.miss_threshold,
+                protect_mult=sc.protect_mult,
+                protect_floor_bps=sc.protect_floor_bps,
+                protect_cap_bps=sc.protect_cap_bps,
+                gate_weight=sc.gate_weight)
+            log.info("[slip] slippage model enabled (%s)",
+                     sc.state_file)
 
     # ------------------------------------------------------------- utilities
 
@@ -258,6 +273,8 @@ class Engine:
         await asyncio.gather(*tasks, return_exceptions=True)
         if self.notifier.enabled:
             await self.notifier.close()
+        if self.slippage is not None:
+            self.slippage.save()
         for v in self.venues.values():
             await v.close()
         log.info("shutdown — %d trades, %d hedges, exp edge $%.4f, "
@@ -295,17 +312,29 @@ class Engine:
         selling entropy: executable premium must clear midline + upper;
         buying entropy: the reverse premium must clear lower - midline.
 
-        Funding cost (P1-3) is folded into the hurdle for OPENING directions
-        only — a reducing trade is never priced out by funding."""
+        Funding cost and expected slippage are folded into the hurdle for
+        OPENING directions only — a reducing trade is never priced out."""
+        parts = self._hurdle_breakdown(buy, sell)
+        return parts["base"] + parts["inventory"] + parts["funding"] + \
+            parts["slip_gate"]
+
+    def _hurdle_breakdown(self, buy, sell) -> Dict[str, float]:
+        """Decompose the net hurdle into its parts (for webui/dashboard)."""
+        cfg = self.cfg
         if sell.key == "entropy":
-            base = self.cfg.midline_bps + self.cfg.upper_bps
+            base = cfg.midline_bps + cfg.upper_bps
         else:
-            base = self.cfg.lower_bps - self.cfg.midline_bps
-        hurdle = base + self._inv_add_bps(buy, sell)
+            base = cfg.lower_bps - cfg.midline_bps
+        inv = self._inv_add_bps(buy, sell)
+        funding = slip_gate = 0.0
         if not self._direction_reduces(buy, sell):
-            fund = self._funding_cost_bps(buy, sell)
-            hurdle += min(fund * 0.5, self.cfg.funding_cap_bps)
-        return hurdle
+            funding = min(self._funding_cost_bps(buy, sell) * 0.5,
+                          cfg.funding_cap_bps)
+            if self.slippage is not None:
+                slip_gate = self.slippage.gate_bps(buy.key, sell.key,
+                                                   cfg.symbol)
+        return {"base": base, "inventory": inv, "funding": funding,
+                "slip_gate": slip_gate}
 
     def _direction_reduces(self, buy, sell) -> bool:
         """True when this direction reduces the existing pair inventory
@@ -554,9 +583,20 @@ class Engine:
                  direction, buy.name, plan.qty, plan.buy_limit, sell.name,
                  plan.sell_limit, plan.buy_notional, plan.q_max_notional,
                  plan.marginal_premium_bps, plan.exp_edge_usd)
-        slip = cfg.leg_slippage_bps / 1e4
-        buy_bound = buy.px_round(plan.buy_limit * (1 + slip), round_up=False)
-        sell_bound = sell.px_round(plan.sell_limit * (1 - slip), round_up=True)
+        # per-leg adaptive protection (二期③): each leg uses its own realized
+        # p90 once the model has enough samples, else the static width. The
+        # dynamic values are recorded as shadow columns for later inspection.
+        if self.slippage is not None:
+            dyn_buy = self.slippage.protect_bps(buy.key, cfg.symbol,
+                                                cfg.leg_slippage_bps)
+            dyn_sell = self.slippage.protect_bps(sell.key, cfg.symbol,
+                                                 cfg.leg_slippage_bps)
+        else:
+            dyn_buy = dyn_sell = cfg.leg_slippage_bps
+        buy_bound = buy.px_round(plan.buy_limit * (1 + dyn_buy / 1e4),
+                                 round_up=False)
+        sell_bound = sell.px_round(plan.sell_limit * (1 - dyn_sell / 1e4),
+                                   round_up=True)
         self._record_send(buy)
         self._record_send(sell)
         # this order's arm->send age (armed_ts carried by _scan, so repeated
@@ -652,13 +692,21 @@ class Engine:
                         if binfo.get("avg_px") else None)
         slip_sell_bps = ((1.0 - sinfo["avg_px"] / plan.sell_limit) * 1e4
                          if sinfo.get("avg_px") else None)
+        if self.slippage is not None:
+            # feed the model (slip is None on misses, which still count in
+            # the miss-rate pool — that is exactly the survivor-bias guard)
+            self.slippage.observe(buy.key, cfg.symbol, slip_buy_bps,
+                                  bfill, plan.qty)
+            self.slippage.observe(sell.key, cfg.symbol, slip_sell_bps,
+                                  sfill, plan.qty)
         self._record_trade(direction, plan,
                            None if unresolved else fill_edge,
                            f"{binfo['status']}/{sinfo['status']}", sent_ok)
         self._log_csv(direction, buy, sell, plan, sent_ok, bfill, sfill,
                       binfo["status"], sinfo["status"], fill_edge, inv_bps,
                       binfo.get("latency_ms"), sinfo.get("latency_ms"),
-                      slip_buy_bps, slip_sell_bps, signal_age)
+                      slip_buy_bps, slip_sell_bps, signal_age,
+                      dyn_buy, dyn_sell)
         self.last_trade_ts = time.time()
         return bool(unresolved)
 
@@ -1288,7 +1336,8 @@ class Engine:
     def _log_csv(self, direction, buy, sell, plan: ArbPlan, ok: bool, bfill,
                  sfill, bstatus, sstatus, fill_edge, inv_bps,
                  buy_lat_ms=None, sell_lat_ms=None, slip_buy_bps=None,
-                 slip_sell_bps=None, signal_age=None) -> None:
+                 slip_sell_bps=None, signal_age=None,
+                 dyn_buy=None, dyn_sell=None) -> None:
         try:
             path = self.cfg.trades_csv
             d = os.path.dirname(path)
@@ -1318,6 +1367,6 @@ class Engine:
                             f"{sfill:.8g}", bstatus, sstatus, f"{fill_edge:.4f}",
                             cell(buy_lat_ms), cell(sell_lat_ms),
                             cell(slip_buy_bps), cell(slip_sell_bps),
-                            cell(signal_age)])
+                            cell(signal_age), cell(dyn_buy), cell(dyn_sell)])
         except Exception:
             log.exception("csv write failed")

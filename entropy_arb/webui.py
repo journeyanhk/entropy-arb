@@ -123,9 +123,9 @@ function render(s) {
       `<td><span class="dot ${d.armed?'d-on':'d-off'}"></span></td>`;
     dr.appendChild(tr);
   }
-  const v = $('venues'); v.innerHTML =
+const v = $('venues'); v.innerHTML =
     '<tr><th>所</th><th>bid/ask</th><th>spread</th><th>age</th>' +
-    '<th>position</th><th>equity</th><th>free</th><th>funding8h</th></tr>';
+    '<th>position</th><th>equity</th><th>free</th><th>fund/h</th><th>miss%</th></tr>';
   for (const x of s.venues) {
     const tr = document.createElement('tr');
     const flags = (x.down?' DOWN':'') + (x.limited?' LTD':'') +
@@ -135,7 +135,8 @@ function render(s) {
       `<td>${fmt(x.data_age,1)}s</td>` +
       `<td class="${x.position>0?'pos':x.position<0?'neg':'dim'}">${fmt(x.position,6)}</td>` +
       `<td>${usd(x.equity,2)}</td><td>${usd(x.free,2)}</td>` +
-      `<td>${x.funding_bps_h===null?'—':fmt(x.funding_bps_h,2)}</td>`;
+      `<td>${x.funding_bps_h===null?'—':fmt(x.funding_bps_h,2)}</td>` +
+      `<td>${x.miss_rate===null?'—':(x.miss_rate*100).toFixed(1)}</td>`;
     v.appendChild(tr);
   }
   const se = $('session'); se.innerHTML = '';
@@ -213,6 +214,7 @@ def _venue_row(v) -> Dict[str, Any]:
         "volume_usd": v.volume_usd,
         "cap_usd": v.cap_usd,
         "funding_bps_h": getattr(v, "funding_bps_h", None),
+        "miss_rate": None,
         "stale": not book.ready or not book.bids or not book.asks,
     }
 
@@ -228,6 +230,8 @@ def status_payload(eng) -> Dict[str, Any]:
         row["limited"] = eng._venue_limited(v)
         row["down"] = v.key in eng._venue_down
         row["unresolved"] = v.key in eng._venue_unresolved_until
+        if eng.slippage is not None:
+            row["miss_rate"] = eng.slippage.miss_rate(v.key, cfg.symbol)
         if v.key in eng._venue_down:
             down_keys.add(v.key)
         venues.append(row)
@@ -237,12 +241,16 @@ def status_payload(eng) -> Dict[str, Any]:
             (eng.hedge, eng.entropy, "sell_entropy", "卖出 ENTROPY → 买入 对冲"),
             (eng.entropy, eng.hedge, "buy_entropy", "买入 ENTROPY → 卖出 对冲")):
         ba, sb = buy.book.best_ask(), sell.book.best_bid()
-        # _eff_threshold already includes inventory + funding: only fees add
-        hurdle = eng._eff_threshold(buy, sell) + buy.fee_bps + sell.fee_bps
+        # decomposed so "why isn't it firing" is answerable at a glance
+        breakdown = eng._hurdle_breakdown(buy, sell)
+        hurdle = (breakdown["base"] + breakdown["inventory"]
+                  + breakdown["funding"] + breakdown["slip_gate"]
+                  + buy.fee_bps + sell.fee_bps)
         directions.append({
             "label": label,
             "premium": None if not (ba and sb) else (sb / ba - 1.0) * 1e4,
             "hurdle": hurdle,
+            "hurdle_breakdown": breakdown,
             "armed": bool(eng._armed.get(dkey)),
         })
     last_trade = eng.last_trade_ts or None
