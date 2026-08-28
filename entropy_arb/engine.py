@@ -315,19 +315,20 @@ class Engine:
         return self.entropy.position < 0 or self.hedge.position > 0
 
     def _funding_cost_bps(self, buy, sell) -> float:
-        """Per-8h funding cost in bps of holding this direction's structure
-        (long the buy leg, short the sell leg). Positive funding = longs pay
-        shorts. Only the adverse side counts; unknown rates contribute 0."""
-        cost = 0.0
+        """Expected funding cost in bps of holding this direction for
+        funding_hold_hours (long the buy leg, short the sell leg). Venues
+        report bps/hour; positive funding = longs pay shorts. Only the
+        adverse side counts; unknown rates contribute 0."""
+        cost_h = 0.0
         for v, is_long in ((buy, True), (sell, False)):
-            f = getattr(v, "funding_bps_8h", None)
+            f = getattr(v, "funding_bps_h", None)
             if f is None:
                 continue
             if is_long and f > 0:
-                cost += f
+                cost_h += f
             elif not is_long and f < 0:
-                cost += -f
-        return cost
+                cost_h += -f
+        return cost_h * max(self.cfg.funding_hold_hours, 0.0)
 
     def _headroom(self, buy, sell, ref_px: float) -> float:
         hb = buy.cap_usd - buy.position * ref_px
@@ -391,26 +392,27 @@ class Engine:
         best = self._scan(now)
         if best is None:
             return
-        buy, sell, plan = best
+        buy, sell, plan, armed_ts = best
         # _scan verified both locks free and nothing ran since (no awaits),
         # so these acquires take the no-suspension fast path
         await self._vlock(buy.key).acquire()
         await self._vlock(sell.key).acquire()
         # run as a task so a shutdown cancels the strategy loop's await, never
         # the in-flight execution itself (both legs must settle)
-        t = asyncio.create_task(self._execute_locked(buy, sell, plan))
+        t = asyncio.create_task(self._execute_locked(buy, sell, plan, armed_ts))
         self._exec_tasks.add(t)
         t.add_done_callback(self._exec_tasks.discard)
         await asyncio.shield(t)
 
-    async def _execute_locked(self, buy, sell, plan: ArbPlan) -> None:
+    async def _execute_locked(self, buy, sell, plan: ArbPlan,
+                              armed_ts: Optional[float]) -> None:
         """Run one execution while holding both venue locks (acquired by the
         caller), then release them and settle the aftermath: unresolved
         outcomes escalate to reconcile, everything else gets a net-delta
         check."""
         unresolved = False
         try:
-            unresolved = await self._execute(buy, sell, plan)
+            unresolved = await self._execute(buy, sell, plan, armed_ts)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -511,7 +513,10 @@ class Engine:
                               dkey, detail)
                 continue
             if best is None or plan.exp_edge_usd > best[2].exp_edge_usd:
-                best = (buy, sell, plan)
+                # carry THIS round's arming timestamp so _execute can measure
+                # arm->send for this order (the global _armed value would
+                # include time spent in previous trades on a persistent edge)
+                best = (buy, sell, plan, self._armed.get(dkey))
         return best
 
     def _margin_need(self, notional: float) -> float:
@@ -533,7 +538,8 @@ class Engine:
 
     # ------------------------------------------------------------- execution
 
-    async def _execute(self, buy, sell, plan: ArbPlan) -> bool:
+    async def _execute(self, buy, sell, plan: ArbPlan,
+                       armed_ts: Optional[float] = None) -> bool:
         """Send both legs and settle the fills. Both venue locks are held by
         the caller. Returns True when an outcome is unresolved and the caller
         must escalate to reconcile."""
@@ -553,7 +559,10 @@ class Engine:
         sell_bound = sell.px_round(plan.sell_limit * (1 - slip), round_up=True)
         self._record_send(buy)
         self._record_send(sell)
-        signal_age = time.time() - (self._armed.get(direction) or time.time())
+        # this order's arm->send age (armed_ts carried by _scan, so repeated
+        # fires on a persistent edge each report their own age, not the
+        # edge's total lifetime)
+        signal_age = time.time() - (armed_ts or time.time())
 
         async def _timed(coro):
             t0 = time.perf_counter()

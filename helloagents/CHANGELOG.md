@@ -7,6 +7,9 @@
 ## [Unreleased]
 
 ### 新增
+- review5 部署前修复（dev 分支）：
+  - funding 口径归一化：两所 funding 均为 8h 口径（HL 每小时支付其 1/8，查证 HL/Lighter 官方文档），统一归一化为 bps/hour（÷8）；`_funding_cost_bps` 成本 = 不利侧小时费率 × `funding_hold_hours`（新增配置，默认 4.0）——修复原实现隐含"持仓满 8h"导致短期成本高估 8 倍
+  - signal_age 传值：`_scan` 返回 `(buy, sell, plan, armed_ts)` 四元组，`_execute` 用本轮武装时间戳计算 age，修复连续边际下 age 跨笔累积
 - P1 三项（dev 分支）：
   - P1-1：`_scan` 数据不可信守卫（stale/未就绪/down/限频熔断）清除 armed 状态，恢复后须重新走满持续性闸门；锁占用与预算耗尽保留武装
   - P1-2：执行遥测打点——trades.csv 新增 5 列（buy/sell_lat_ms、slip_buy/sell_bps、signal_age_sec；avg_px 缺失留空不回填）；`tools/analyze.py --trades` 输出延迟/滑点/信号年龄/滑点税分布

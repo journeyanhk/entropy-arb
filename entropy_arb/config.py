@@ -140,6 +140,7 @@ class Config:
     margin_reserve_factor: float
     margin_leverage: float
     funding_cap_bps: float
+    funding_hold_hours: float
     # recorder
     recorder_enabled: bool
     recorder_csv: str
@@ -225,6 +226,7 @@ _SCHEMA: Dict[str, Any] = {
         "margin_reserve_factor": float,
         "margin_leverage": float,
         "funding_cap_bps": float,
+        "funding_hold_hours": float,
     },
     "recorder": {
         "enabled": bool,
@@ -410,6 +412,10 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
     if funding_cap < 0:
         raise ConfigError("execution.funding_cap_bps must be >= 0 / "
                           "funding 门槛上限不能为负")
+    funding_hold = float(_get(raw, "execution", "funding_hold_hours", 4.0))
+    if funding_hold <= 0:
+        raise ConfigError("execution.funding_hold_hours must be > 0 / "
+                          "预期持仓时长必须为正")
 
     web_enabled = bool(_get(raw, "web_dashboard", "enabled", True))
     web_host = str(_get(raw, "web_dashboard", "host", "127.0.0.1"))
@@ -462,6 +468,7 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         margin_reserve_factor=margin_factor,
         margin_leverage=margin_lev,
         funding_cap_bps=funding_cap,
+        funding_hold_hours=funding_hold,
         recorder_enabled=bool(_get(raw, "recorder", "enabled", True)),
         recorder_csv=_get(raw, "recorder", "csv", "logs/minutes.csv"),
         log_level=str(_get(raw, "logging", "level", "INFO")).upper(),

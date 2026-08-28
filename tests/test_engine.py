@@ -113,6 +113,11 @@ def run_scan(eng):
     return asyncio.run(go())
 
 
+def unpack(best):
+    """(buy, sell, plan, armed_ts) -> (buy, sell, plan)."""
+    return best[0], best[1], best[2]
+
+
 def test_scan_fires_sell_entropy_above_band():
     eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
     # entropy 15 bps rich vs hedge: above midline+upper=9 -> sell entropy
@@ -120,7 +125,7 @@ def test_scan_fires_sell_entropy_above_band():
     eng.hedge.set_book(99.99, 100.01)
     best = run_scan(eng)
     assert best is not None
-    buy, sell, plan = best
+    buy, sell, plan = unpack(best)
     assert sell.key == "entropy" and buy.key == "hedge"
     assert plan.exp_edge_usd > 0
 
@@ -140,7 +145,7 @@ def test_scan_fires_buy_entropy_below_band():
     eng.hedge.set_book(99.99, 100.01)
     best = run_scan(eng)
     assert best is not None
-    buy, sell, plan = best
+    buy, sell, plan = unpack(best)
     assert buy.key == "entropy" and sell.key == "hedge"
 
 
@@ -212,7 +217,7 @@ def test_drift_halt_only_allows_reducing_direction():
     eng.hedge.position = -10.0
     best = run_scan(eng)
     assert best is not None
-    buy, sell, plan = best
+    buy, sell, plan = unpack(best)
     assert sell.key == "entropy"      # the adding direction must not fire
 
 
@@ -607,10 +612,12 @@ def test_armed_kept_when_venue_locked_or_throttled():
 def test_funding_gate_only_for_opening_directions():
     eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
     e, h = eng.entropy, eng.hedge
-    e.funding_bps_8h, h.funding_bps_8h = -3.0, 2.0
+    eng.cfg.funding_hold_hours = 1.0
+    # hourly rates: entropy -3 bps/h (shorts pay), hedge +2 bps/h (longs pay)
+    e.funding_bps_h, h.funding_bps_h = -3.0, 2.0
     # flat: both directions are OPENING -> funding cost counts.
-    # sell_entropy = short entropy (funding -3: shorts pay 3) + long hedge
-    # (funding +2: longs pay 2) -> adverse cost 5 -> +min(2.5, cap)
+    # sell_entropy = short entropy (pays 3) + long hedge (pays 2)
+    # -> adverse cost 5 bps/h × 1h = 5 -> +min(2.5, cap)
     approx(eng._funding_cost_bps(buy=h, sell=e), 5.0)
     approx(eng._eff_threshold(buy=h, sell=e), 9.0 + 2.5)
     # buy_entropy = long entropy (funding -3: longs RECEIVE) + short hedge
@@ -623,15 +630,31 @@ def test_funding_gate_only_for_opening_directions():
     approx(eng._eff_threshold(buy=h, sell=e), 9.0)
 
 
+def test_funding_cost_scales_with_hold_hours():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    e, h = eng.entropy, eng.hedge
+    # 8 bps per 8h on the adverse side == 1 bps/h
+    e.funding_bps_h, h.funding_bps_h = None, None
+    e.funding_bps_h = -8.0 / 8.0   # short entropy pays 1 bps/h
+    h.funding_bps_h = 0.0
+    eng.cfg.funding_hold_hours = 4.0
+    approx(eng._funding_cost_bps(buy=h, sell=e), 4.0)   # 1 bps/h × 4h
+    eng.cfg.funding_hold_hours = 8.0
+    approx(eng._funding_cost_bps(buy=h, sell=e), 8.0)
+    eng.cfg.funding_hold_hours = 0.5
+    approx(eng._funding_cost_bps(buy=h, sell=e), 0.5)
+
+
 def test_funding_gate_capped_and_missing_rates_ignored():
     eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
     e, h = eng.entropy, eng.hedge
-    e.funding_bps_8h, h.funding_bps_8h = -100.0, 0.0
+    eng.cfg.funding_hold_hours = 1.0
+    e.funding_bps_h, h.funding_bps_h = -100.0, 0.0
     eng.cfg.funding_cap_bps = 5.0
-    # raw cost 100 * 0.5 = 50, capped at 5
+    # raw cost 100 × 0.5 = 50, capped at 5
     approx(eng._eff_threshold(buy=h, sell=e), 9.0 + 5.0)
     # unknown rates contribute nothing
-    e.funding_bps_8h, h.funding_bps_8h = None, None
+    e.funding_bps_h, h.funding_bps_h = None, None
     approx(eng._funding_cost_bps(buy=h, sell=e), 0.0)
     approx(eng._eff_threshold(buy=h, sell=e), 9.0)
 

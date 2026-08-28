@@ -14,6 +14,7 @@
 | 202608271932 | p0-forceclose-slip | 修复/加固 | ✅已完成 | [链接](2026-08/202608271932_p0-forceclose-slip/) |
 | 202608280833 | web-dashboard-serverchan | 功能 | ✅已完成 | [链接](2026-08/202608280833_web-dashboard-serverchan/) |
 | 202608280929 | p1-triad | 修复/功能 | ✅已完成 | [链接](2026-08/202608280929_p1-triad/) |
+| 202608281018 | review5-predeploy | 修复/加固 | ✅已完成 | [链接](2026-08/202608281018_review5-predeploy/) |
 
 ---
 
@@ -27,3 +28,4 @@
 - [202608271932_p0-forceclose-slip](2026-08/202608271932_p0-forceclose-slip/) - P0 强平单滑点修复：兜底单用最宽保护价（200 bps），零滑点钉死盘口价反而最不易成交
 - [202608280833_web-dashboard-serverchan](2026-08/202608280833_web-dashboard-serverchan/) - Web 状态面板（引擎内嵌 HTML+JSON）+ Server酱告警通道（dev 分支）
 - [202608280929_p1-triad](2026-08/202608280929_p1-triad/) - P1 三项：armed 重置、延迟/滑点打点（trades.csv 5 新列 + analyze --trades）、funding 方向过滤（dev 分支）
+- [202608281018_review5-predeploy](2026-08/202608281018_review5-predeploy/) - review5 部署前修复：funding 归一化为 bps/hour × hold_hours、signal_age 传值（dev 分支）

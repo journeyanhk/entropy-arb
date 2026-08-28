@@ -135,7 +135,7 @@ function render(s) {
       `<td>${fmt(x.data_age,1)}s</td>` +
       `<td class="${x.position>0?'pos':x.position<0?'neg':'dim'}">${fmt(x.position,6)}</td>` +
       `<td>${usd(x.equity,2)}</td><td>${usd(x.free,2)}</td>` +
-      `<td>${x.funding_bps_8h===null?'—':fmt(x.funding_bps_8h,2)}</td>`;
+      `<td>${x.funding_bps_h===null?'—':fmt(x.funding_bps_h,2)}</td>`;
     v.appendChild(tr);
   }
   const se = $('session'); se.innerHTML = '';
@@ -212,7 +212,7 @@ def _venue_row(v) -> Dict[str, Any]:
         "free": v.free,
         "volume_usd": v.volume_usd,
         "cap_usd": v.cap_usd,
-        "funding_bps_8h": getattr(v, "funding_bps_8h", None),
+        "funding_bps_h": getattr(v, "funding_bps_h", None),
         "stale": not book.ready or not book.bids or not book.asks,
     }
 

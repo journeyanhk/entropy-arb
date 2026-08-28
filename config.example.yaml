@@ -105,6 +105,7 @@ execution:
   margin_leverage: 10         # YOUR actual venue leverage (1x default) / 你的实际杠杆倍数（默认按 1x）
                               # pre-check demands free >= notional/leverage × reserve / 预检按名义÷杠杆×系数校验
   funding_cap_bps: 5.0        # funding gate cap added to OPENING hurdles (P1-3); reducing trades never gated / 开仓门槛的 funding 上限（减仓不受影响）
+  funding_hold_hours: 4.0    # assumed hold time when pricing funding into the hurdle (hours) / 折算 funding 成本用的预期持仓时长（小时）
 
 # ================== DATA RECORDER / 数据采集 ===============================
 # Always-on while the bot runs: samples both real order books 1/sec and

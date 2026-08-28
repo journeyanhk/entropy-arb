@@ -88,7 +88,7 @@ class HLVenue:
         self.min_quote = 10.0
         self._cloid = int(time.time() * 1000)
         self._signing = None      # lazy hyperliquid-sdk signing module
-        self.funding_bps_8h: Optional[float] = None  # per-8h funding, bps
+        self.funding_bps_h: Optional[float] = None  # funding, bps per HOUR
 
     async def _info(self, payload: dict):
         async with self.session.post(
@@ -353,8 +353,10 @@ class HLVenue:
         return None
 
     async def fetch_funding(self) -> None:
-        """Refresh funding_bps_8h from metaAndAssetCtxs (per-8h rate in bps;
-        positive = longs pay shorts, same convention as Lighter)."""
+        """Refresh funding_bps_h from metaAndAssetCtxs. HL expresses the rate
+        as an 8-hour figure (paid hourly at 1/8 of it), so divide by 8 to
+        normalize to bps per HOUR — the unit _funding_cost_bps works in.
+        Positive = longs pay shorts (same convention as Lighter)."""
         try:
             data = await self._info({"type": "metaAndAssetCtxs",
                                      "dex": self.conf.hl_dex})
@@ -362,7 +364,7 @@ class HLVenue:
             for c in ctxs:
                 if c.get("coin") != self.coin:
                     continue
-                self.funding_bps_8h = float(c.get("funding") or 0.0) * 1e4
+                self.funding_bps_h = float(c.get("funding") or 0.0) * 1e4 / 8.0
                 return
         except Exception as e:
             log.warning("[%s] funding fetch failed: %r", self.name, e)

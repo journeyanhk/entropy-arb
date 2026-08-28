@@ -173,7 +173,7 @@ class LighterVenue:
         self._coi = int(time.time() * 1000)
         self._acct_cache: Optional[dict] = None
         self._acct_cache_ts = 0.0
-        self.funding_bps_8h: Optional[float] = None  # per-8h funding, bps
+        self.funding_bps_h: Optional[float] = None  # funding, bps per HOUR
 
     # ------------------------------------------------------------------ REST
 
@@ -452,14 +452,15 @@ class LighterVenue:
         return None
 
     async def fetch_funding(self) -> None:
-        """Refresh funding_bps_8h from GET /api/v1/funding-rates (rate is the
-        per-8h fraction, e.g. 0.0001 = 1 bps; positive = longs pay shorts)."""
+        """Refresh funding_bps_h from GET /api/v1/funding-rates. Lighter's
+        rate is the per-8h fraction (paid hourly at 1/8), so divide by 8 to
+        normalize to bps per HOUR. Positive = longs pay shorts."""
         try:
             data = await self._get("/api/v1/funding-rates")
             for fr in (data or {}).get("funding_rates") or []:
                 if int(fr.get("market_id", -1)) != self.market_id:
                     continue
-                self.funding_bps_8h = float(fr.get("rate") or 0.0) * 1e4
+                self.funding_bps_h = float(fr.get("rate") or 0.0) * 1e4 / 8.0
                 return
         except Exception as e:
             log.warning("[%s] funding fetch failed: %r", self.name, e)
