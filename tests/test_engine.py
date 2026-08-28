@@ -25,6 +25,8 @@ thresholds:
   lower_bps: {lower}
 execution:
   premium_persist_sec: 0.0
+slippage:
+  enabled: false     # tests: keep old threshold math clean (no shared state file)
 """)
     f.close()
     return load_config(f.name, NO_ENV,
@@ -660,9 +662,13 @@ def test_funding_gate_capped_and_missing_rates_ignored():
 
 
 def test_slippage_gate_only_on_opening_direction():
-    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
     from entropy_arb.slippage import SlipModel
-    eng.slippage = SlipModel(min_samples=3)
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    # fresh model: isolated temp state so a repo's logs/slip_state.json can't
+    # leak samples in (that file is a shared runtime artifact, not test input)
+    eng.slippage = SlipModel(state_file=os.path.join(tempfile.mkdtemp(),
+                                                     "slip.json"),
+                             min_samples=3)
     # both legs with known p50 = 2 bps -> round-trip gate = (2+2)*2 = 8
     for i in range(3):
         eng.slippage.observe("entropy", "SNDK", 2.0, 1.0, 1.0)
