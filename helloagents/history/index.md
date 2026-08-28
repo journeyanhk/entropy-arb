@@ -16,6 +16,7 @@
 | 202608280929 | p1-triad | 修复/功能 | ✅已完成 | [链接](2026-08/202608280929_p1-triad/) |
 | 202608281018 | review5-predeploy | 修复/加固 | ✅已完成 | [链接](2026-08/202608281018_review5-predeploy/) |
 | 202608281100 | devgen2-slippage | 功能 | ✅已完成 | [链接](2026-08/202608281100_devgen2-slippage/) |
+| 202608281156 | review6-slippage-fixes | 修复/加固 | ✅已完成 | [链接](2026-08/202608281156_review6-slippage-fixes/) |
 
 ---
 
@@ -31,3 +32,4 @@
 - [202608280929_p1-triad](2026-08/202608280929_p1-triad/) - P1 三项：armed 重置、延迟/滑点打点（trades.csv 5 新列 + analyze --trades）、funding 方向过滤（dev 分支）
 - [202608281018_review5-predeploy](2026-08/202608281018_review5-predeploy/) - review5 部署前修复：funding 归一化为 bps/hour × hold_hours、signal_age 传值（dev 分支）
 - [202608281100_devgen2-slippage](2026-08/202608281100_devgen2-slippage/) - 二期③滑点动态管理：SlipModel 开仓往返门槛 + 自适应保护价 + miss率 + 状态持久化（dev-gen2 分支）
+- [202608281156_review6-slippage-fixes](2026-08/202608281156_review6-slippage-fixes/) - review6 修复：miss 归因过滤、samples 修剪、miss 超阈值告警（dev-gen2 分支）

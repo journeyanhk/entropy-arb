@@ -25,11 +25,16 @@
 - 预期结果: 保护价 = clamp(6,10,30) = 10；样本不足回退静态 30
 
 ## API接口
-- `SlipModel.observe(venue, symbol, slip_bps, filled_qty, order_qty)` 喂样本（slip None = miss，进 miss 池）
+- `SlipModel.observe(venue, symbol, slip_bps, filled_qty, order_qty)` 喂样本（slip None = miss，进 miss 池；内部按时间窗 + window_n×2 修剪 samples）
 - `SlipModel.p50/p90(venue, symbol) -> Optional[float]` 滚动分位（200 笔 ∩ 72h）
 - `SlipModel.gate_bps(buy_key, sell_key, symbol) -> float` 往返滑点门槛
 - `SlipModel.protect_bps(venue, symbol, fallback) -> float` 动态保护价
 - `SlipModel.miss_rate(venue, symbol) -> Optional[float]` 24h 滚动 miss 率
+
+## 数据质量约定（review6）
+- **miss 归因**：只有"无 err、无 unresolved、到达交易所且 IOC 打空"的腿进 miss 池（`_execute` 过滤）；网络失败/结果未知不污染
+- **samples 有界**：observe 内修剪，时间窗外 + 超 window_n×2 即淘汰
+- **miss 告警**：engine 每小时每所最多一次（超 miss_threshold → log.warning + 通知）
 
 ## 数据模型
 - 状态文件 `logs/slip_state.json`，键 `(venue_key|symbol) → {samples:[[ts,bps]], fills:[[ts,full]]}`，20 次 observe + shutdown 写盘，load 容错

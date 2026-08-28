@@ -106,11 +106,19 @@ class SlipModel:
         """Record one leg settlement. slip_bps None when no avg_px (bias the
         miss pool); filled_qty vs order_qty classify full/partial/miss."""
         st = self._st(venue_key, symbol)
+        now = time.time()
         if slip_bps is not None and filled_qty > 0:
-            st.samples.append((time.time(), slip_bps))
+            st.samples.append((now, slip_bps))
+            # prune: samples must stay bounded (count AND time). Keep a
+            # 2× window-headroom so a restart still has enough in-window
+            # samples — otherwise memory and the state file grow forever.
+            cutoff = now - self.window_hours * 3600
+            while st.samples and (st.samples[0][0] < cutoff
+                                  or len(st.samples) > self.window_n * 2):
+                st.samples.popleft()
         filled = filled_qty > 0
-        st.fills.append((time.time(), filled))
-        while st.fills and time.time() - st.fills[0][0] > MISS_WINDOW_SEC:
+        st.fills.append((now, filled))
+        while st.fills and now - st.fills[0][0] > MISS_WINDOW_SEC:
             st.fills.popleft()
         self._dirty += 1
         if self._dirty >= 20:

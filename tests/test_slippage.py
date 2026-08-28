@@ -116,6 +116,37 @@ def test_load_corrupt_file_falls_back_empty():
     assert m.p50("entropy", "SNDK") is None
 
 
+def test_samples_pruned_by_time_window():
+    m = make_model(window_n=200, window_hours=1.0)
+    for _ in range(5):
+        m.observe("entropy", "SNDK", 1.0, 1.0, 1.0)
+    # age the whole queue beyond the window -> observe() prunes it
+    st = m._venues[("entropy", "SNDK")]
+    old = time.time() - 2 * 3600
+    st.samples = __import__("collections").deque((old, s) for _, s in st.samples)
+    m.observe("entropy", "SNDK", 1.0, 1.0, 1.0)
+    assert len(st.samples) == 1          # only the fresh sample remains
+
+
+def test_samples_bounded_by_count():
+    m = make_model(window_n=10, window_hours=72.0)
+    for i in range(100):
+        m.observe("entropy", "SNDK", 1.0, 1.0, 1.0)
+    st = m._venues[("entropy", "SNDK")]
+    assert len(st.samples) <= m.window_n * 2   # 20
+    assert m.p50("entropy", "SNDK") == 1.0     # still queryable
+
+
+def test_fills_pruned_but_samples_pruned_same_path():
+    m = make_model(window_n=5, window_hours=1.0)
+    for _ in range(60):
+        m.observe("entropy", "SNDK", None, 0.0, 1.0)   # misses: fills only
+    st = m._venues[("entropy", "SNDK")]
+    assert len(st.samples) == 0
+    assert len(st.fills) <= 60            # fills bounded by 24h window
+    assert m.miss_rate("entropy", "SNDK") == 1.0
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

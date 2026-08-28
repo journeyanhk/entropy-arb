@@ -111,6 +111,8 @@ class Engine:
         self.notifier = Notifier.from_env()
         # realized-slippage model (二期③); None when disabled
         self.slippage: Optional[SlipModel] = None
+        # miss-alert rate limiting: venue key -> last warn ts (1/hour)
+        self._miss_warn_at: Dict[str, float] = {}
         if cfg.slippage.enabled:
             sc = cfg.slippage
             self.slippage = SlipModel(
@@ -693,12 +695,18 @@ class Engine:
         slip_sell_bps = ((1.0 - sinfo["avg_px"] / plan.sell_limit) * 1e4
                          if sinfo.get("avg_px") else None)
         if self.slippage is not None:
-            # feed the model (slip is None on misses, which still count in
-            # the miss-rate pool — that is exactly the survivor-bias guard)
-            self.slippage.observe(buy.key, cfg.symbol, slip_buy_bps,
-                                  bfill, plan.qty)
-            self.slippage.observe(sell.key, cfg.symbol, slip_sell_bps,
-                                  sfill, plan.qty)
+            # feed the model, but ONLY market outcomes: a leg with an error
+            # (send-failed / rate-limited / margin-rejected) or an unknown
+            # outcome (unresolved) must NOT count as a miss — that would let
+            # a network blip push miss_rate up and mislead the protection-cap
+            # decision. The miss pool is meant to measure only "order reached
+            # the venue and IOC got rejected by the price protection".
+            for v, info, slip, fill in ((buy, binfo, slip_buy_bps, bfill),
+                                        (sell, sinfo, slip_sell_bps, sfill)):
+                if info.get("unresolved") or info.get("err") is not None:
+                    continue
+                self.slippage.observe(v.key, cfg.symbol, slip, fill,
+                                      plan.qty)
         self._record_trade(direction, plan,
                            None if unresolved else fill_edge,
                            f"{binfo['status']}/{sinfo['status']}", sent_ok)
@@ -1299,6 +1307,33 @@ class Engine:
         finally:
             await runner.cleanup()
 
+    async def _check_miss_alert(self) -> None:
+        """Surf the slippage model's miss rate: when a venue's 24h miss rate
+        exceeds the configured threshold, warn + notify (at most once per
+        hour per venue) with the concrete action — raising protect_cap_bps
+        is the one human decision the model cannot make for itself."""
+        if self.slippage is None:
+            return
+        cfg = self.cfg
+        now = time.time()
+        for v in self.venues.values():
+            rate = self.slippage.miss_rate(v.key, cfg.symbol)
+            if rate is None or rate <= cfg.slippage.miss_threshold:
+                continue
+            if now - self._miss_warn_at.get(v.key, 0.0) < 3600.0:
+                continue
+            self._miss_warn_at[v.key] = now
+            log.warning("[%s] 24h miss rate %.1f%% > %.0f%% — if slip p90 "
+                        "is stable, consider raising "
+                        "slippage.protect_cap_bps / 打空率偏高，若滑点 "
+                        "p90 稳定，考虑上调保护价上限", v.name, rate * 100.0,
+                        cfg.slippage.miss_threshold * 100.0)
+            await self._notify(f"⚠️ [{v.name}] 24h 打空率 "
+                               f"{rate * 100:.1f}% 超过阈值"
+                               f" {cfg.slippage.miss_threshold * 100:.0f}%——"
+                               f"若滑点 p90 稳定，考虑上调 "
+                               f"slippage.protect_cap_bps")
+
     async def _status_loop(self) -> None:
         cfg = self.cfg
         while not self.stop.is_set():
@@ -1306,6 +1341,12 @@ class Engine:
                 await asyncio.sleep(cfg.status_interval_sec)
             except asyncio.CancelledError:
                 raise
+            try:
+                await self._check_miss_alert()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("miss alert check failed")
             books = " | ".join(
                 f"{v.name} {v.book.best_bid() or '—'}/{v.book.best_ask() or '—'}"
                 + ("" if v.book.is_fresh(cfg.staleness_sec,

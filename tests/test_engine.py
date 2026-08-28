@@ -6,6 +6,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -687,6 +688,93 @@ def test_slippage_disabled_no_gate_no_model():
     eng.slippage = None                 # disabled path -> no model, no gate
     assert abs(eng._eff_threshold(buy=eng.hedge, sell=eng.entropy)
                - 9.0) < 1e-9
+
+
+def test_slippage_observe_filters_nonmarket_legs():
+    """err/unresolved legs must not enter the slip/miss pools."""
+    from entropy_arb.slippage import SlipModel
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.slippage = SlipModel(state_file=os.path.join(tempfile.mkdtemp(),
+                                                     "slip.json"),
+                             min_samples=1)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    plan, reason = eng._plan(eng.hedge, eng.entropy, 500.0)
+    assert reason == "ok"
+
+    async def fake_send_err(is_buy, qty, limit_px, reduce_only=False):
+        return {"status": "send-failed", "filled_base": 0.0, "avg_px": None,
+                "err": "network", "unresolved": False}
+
+    async def fake_send_unresolved(is_buy, qty, limit_px, reduce_only=False):
+        return {"status": "timeout", "filled_base": 0.0, "avg_px": None,
+                "err": None, "unresolved": True}
+
+    eng.entropy.send_taker = fake_send_err
+    eng.hedge.send_taker = fake_send_unresolved
+    asyncio.run(eng._execute(eng.hedge, eng.entropy, plan, time.time()))
+    assert len(eng.slippage._venues.get(("entropy", "SNDK"),
+                                        __import__("collections").deque())) == 0
+    # both legs skipped entirely -> no venue state created
+    assert eng.slippage.miss_rate("entropy", "SNDK") is None
+    assert eng.slippage.miss_rate("hedge", "SNDK") is None
+
+
+def test_slippage_observe_counts_market_miss():
+    """a real IOC miss (no err, no unresolved, zero fill) enters the pool."""
+    from entropy_arb.slippage import SlipModel
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.slippage = SlipModel(state_file=os.path.join(tempfile.mkdtemp(),
+                                                     "slip.json"),
+                             min_samples=1)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    plan, reason = eng._plan(eng.hedge, eng.entropy, 500.0)
+    assert reason == "ok"
+
+    async def fake_send_miss(is_buy, qty, limit_px, reduce_only=False):
+        return {"status": "canceled", "filled_base": 0.0, "avg_px": None,
+                "err": None, "unresolved": False}
+
+    eng.entropy.send_taker = fake_send_miss
+    eng.hedge.send_taker = fake_send_miss
+    asyncio.run(eng._execute(eng.hedge, eng.entropy, plan, time.time()))
+    assert eng.slippage.miss_rate("entropy", "SNDK") == 1.0
+    assert eng.slippage.miss_rate("hedge", "SNDK") == 1.0
+
+
+def test_miss_alert_warns_and_rate_limits(caplog):
+    """miss_rate > threshold -> warning + notify, at most once/hour/venue."""
+    from entropy_arb.config import SlippageConf
+    from entropy_arb.slippage import SlipModel
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    # SlippageConf is frozen: rebuild it with the lower threshold
+    sc = eng.cfg.slippage
+    eng.cfg.slippage = SlippageConf(enabled=sc.enabled, state_file=sc.state_file,
+                                    min_samples=sc.min_samples,
+                                    window_n=sc.window_n,
+                                    window_hours=sc.window_hours,
+                                    gate_weight=sc.gate_weight,
+                                    protect_mult=sc.protect_mult,
+                                    protect_floor_bps=sc.protect_floor_bps,
+                                    protect_cap_bps=sc.protect_cap_bps,
+                                    miss_threshold=0.1)
+    eng.slippage = SlipModel(state_file=os.path.join(tempfile.mkdtemp(),
+                                                     "slip.json"),
+                             min_samples=3)
+    for _ in range(5):
+        eng.slippage.observe("entropy", "SNDK", None, 0.0, 1.0)  # 100% miss
+    notified = []
+
+    async def fake_notify(text):
+        notified.append(text)
+
+    eng._notify = fake_notify
+    with caplog.at_level(__import__("logging").WARNING, logger="engine"):
+        asyncio.run(eng._check_miss_alert())
+        asyncio.run(eng._check_miss_alert())      # second call same hour
+    assert len(notified) == 1                      # rate-limited to 1/hour
+    assert any("miss rate" in r.message for r in caplog.records)
 
 
 def test_hurdle_breakdown_exposes_parts():

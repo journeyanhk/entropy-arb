@@ -7,6 +7,10 @@
 ## [Unreleased]
 
 ### 新增
+- review6 修复（dev-gen2）：
+  - miss 归因过滤：`_execute` observe 前剔除 `err`/`unresolved` 腿——miss 池只含"订单到达交易所、IOC 被保护价打空"的市场性事件，网络抖动不再劫持 miss_rate
+  - samples 修剪：`observe` 内按时间窗 + `window_n×2` 数量上限裁剪（内存与状态文件有界）
+  - miss 告警：status loop 每轮检查，24h miss 率超 `miss_threshold` → log.warning + Server酱通知（每所每小时限频），文案含"上调 protect_cap_bps"行动建议
 - 二期③ 滑点动态管理（dev-gen2 分支）：
   - 新增 `entropy_arb/slippage.py` `SlipModel`：按 (venue,symbol) 维护实测滑点，滚动分位（200 笔 ∩ 72h 时间窗）、冷启动回退（<min_samples）、负滑点门槛侧截断、miss-rate 幸存者偏差统计、状态持久化（20 次落盘 + shutdown）
   - 开仓门槛：`_eff_threshold` 对开仓方向加整个往返预期滑点 `(p50_buy+p50_sell)×2×gate_weight`（减仓永不卡）
