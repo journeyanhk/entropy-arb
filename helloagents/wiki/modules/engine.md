@@ -35,10 +35,14 @@
 
 ### 需求: 中枢漂移哨兵（P1-3）
 **模块:** engine
-`_drift_loop` 每秒采样溢价入 `_premium_hist`；每 `drift_check_sec` 计算 `drift_window_sec` 内均值；`|均值−midline| > (upper+lower)/2 × drift_band_factor` 持续 `drift_halt_sec` → `_drift_halted=True` + critical + Telegram。`_scan` 在漂移停机时只放行减仓方向（sell_entropy 需 entropy.position>0；buy_entropy 需 entropy.position<0），且单笔名义钳制到 `|entropy.position| × buy腿ask`（review2 R3，防穿零反向开仓）。`drift_auto_resume_sec=0`（默认）不自动解除，人工重启；>0 时回带内持续 N 秒自动恢复（review2 R4）。不自动改 midline。
+`_drift_loop` 每秒采样溢价入 `_premium_hist`；每 `drift_check_sec` 计算 `drift_window_sec` 内均值；`|均值−midline| > (upper+lower)/2 × drift_band_factor` 持续 `drift_halt_sec` → `_drift_halted=True` + critical + Telegram。`_scan` 在漂移停机时只放行减仓方向（sell_entropy 需 entropy.position>0；buy_entropy 需 entropy.position<0），且单笔名义钳制到 `|entropy.position| × buy腿ask`（防穿零反向开仓）。`drift_auto_resume_sec=0`（默认）不自动解除，人工重启；>0 时回带内持续 N 秒自动恢复。不自动改 midline。
 
-#### 场景: 溢价中枢漂移
-- 预期结果: 停开仓、仅减仓（有数量钳制）、人工确认后改配置重启；可选自动恢复
+### 需求: funding 方向过滤（P1-3）
+**模块:** engine / venue
+venue 每 30s 刷新 `funding_bps_8h`（HL `metaAndAssetCtxs`、Lighter `funding-rates`，per-8h 分数 ×1e4 转 bps，正=多头付）。`_funding_cost_bps` 只计开仓方向的不利侧；`_eff_threshold` 对开仓方向加 `min(cost×0.5, funding_cap_bps)`，`_direction_reduces` 判定减仓方向永不 gate。
+
+#### 场景: 开仓方向 funding 不利
+- 预期结果: 门槛增加（≤cap）；减仓不受影响；funding 温和时照常
 
 ### 需求: Telegram 告警（⑥）
 **模块:** engine / notifier

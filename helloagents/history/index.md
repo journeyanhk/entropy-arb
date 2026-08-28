@@ -13,6 +13,7 @@
 | 202608271754 | p0-hedge-bounded-retry | 修复/加固 | ✅已完成 | [链接](2026-08/202608271754_p0-hedge-bounded-retry/) |
 | 202608271932 | p0-forceclose-slip | 修复/加固 | ✅已完成 | [链接](2026-08/202608271932_p0-forceclose-slip/) |
 | 202608280833 | web-dashboard-serverchan | 功能 | ✅已完成 | [链接](2026-08/202608280833_web-dashboard-serverchan/) |
+| 202608280929 | p1-triad | 修复/功能 | ✅已完成 | [链接](2026-08/202608280929_p1-triad/) |
 
 ---
 
@@ -25,3 +26,4 @@
 - [202608271754_p0-hedge-bounded-retry](2026-08/202608271754_p0-hedge-bounded-retry/) - P0-1 裸露敞口有界快速重试：递增滑点、超时对价强平、残留 carry/停机分级
 - [202608271932_p0-forceclose-slip](2026-08/202608271932_p0-forceclose-slip/) - P0 强平单滑点修复：兜底单用最宽保护价（200 bps），零滑点钉死盘口价反而最不易成交
 - [202608280833_web-dashboard-serverchan](2026-08/202608280833_web-dashboard-serverchan/) - Web 状态面板（引擎内嵌 HTML+JSON）+ Server酱告警通道（dev 分支）
+- [202608280929_p1-triad](2026-08/202608280929_p1-triad/) - P1 三项：armed 重置、延迟/滑点打点（trades.csv 5 新列 + analyze --trades）、funding 方向过滤（dev 分支）

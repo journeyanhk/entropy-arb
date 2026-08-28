@@ -125,7 +125,7 @@ function render(s) {
   }
   const v = $('venues'); v.innerHTML =
     '<tr><th>所</th><th>bid/ask</th><th>spread</th><th>age</th>' +
-    '<th>position</th><th>equity</th><th>free</th></tr>';
+    '<th>position</th><th>equity</th><th>free</th><th>funding8h</th></tr>';
   for (const x of s.venues) {
     const tr = document.createElement('tr');
     const flags = (x.down?' DOWN':'') + (x.limited?' LTD':'') +
@@ -134,7 +134,8 @@ function render(s) {
       `<td>${x.bid??'—'}/${x.ask??'—'}</td><td>${fmt(x.spread_bps,1)}</td>` +
       `<td>${fmt(x.data_age,1)}s</td>` +
       `<td class="${x.position>0?'pos':x.position<0?'neg':'dim'}">${fmt(x.position,6)}</td>` +
-      `<td>${usd(x.equity,2)}</td><td>${usd(x.free,2)}</td>`;
+      `<td>${usd(x.equity,2)}</td><td>${usd(x.free,2)}</td>` +
+      `<td>${x.funding_bps_8h===null?'—':fmt(x.funding_bps_8h,2)}</td>`;
     v.appendChild(tr);
   }
   const se = $('session'); se.innerHTML = '';
@@ -211,6 +212,7 @@ def _venue_row(v) -> Dict[str, Any]:
         "free": v.free,
         "volume_usd": v.volume_usd,
         "cap_usd": v.cap_usd,
+        "funding_bps_8h": getattr(v, "funding_bps_8h", None),
         "stale": not book.ready or not book.bids or not book.asks,
     }
 
@@ -235,9 +237,8 @@ def status_payload(eng) -> Dict[str, Any]:
             (eng.hedge, eng.entropy, "sell_entropy", "卖出 ENTROPY → 买入 对冲"),
             (eng.entropy, eng.hedge, "buy_entropy", "买入 ENTROPY → 卖出 对冲")):
         ba, sb = buy.book.best_ask(), sell.book.best_bid()
-        hurdle = (eng._eff_threshold(buy, sell)
-                  + buy.fee_bps + sell.fee_bps
-                  + eng._inv_add_bps(buy, sell))
+        # _eff_threshold already includes inventory + funding: only fees add
+        hurdle = eng._eff_threshold(buy, sell) + buy.fee_bps + sell.fee_bps
         directions.append({
             "label": label,
             "premium": None if not (ba and sb) else (sb / ba - 1.0) * 1e4,

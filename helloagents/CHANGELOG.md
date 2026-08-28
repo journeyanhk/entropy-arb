@@ -7,6 +7,11 @@
 ## [Unreleased]
 
 ### 新增
+- P1 三项（dev 分支）：
+  - P1-1：`_scan` 数据不可信守卫（stale/未就绪/down/限频熔断）清除 armed 状态，恢复后须重新走满持续性闸门；锁占用与预算耗尽保留武装
+  - P1-2：执行遥测打点——trades.csv 新增 5 列（buy/sell_lat_ms、slip_buy/sell_bps、signal_age_sec；avg_px 缺失留空不回填）；`tools/analyze.py --trades` 输出延迟/滑点/信号年龄/滑点税分布
+  - P1-3：funding 方向过滤——venue 增 `funding_bps_8h`（HL metaAndAssetCtxs / Lighter funding-rates，×1e4 转 bps，30s 随余额轮询）；`_eff_threshold` 仅对开仓方向加 `min(不利funding×0.5, funding_cap_bps)`（默认 5），减仓永不 gate
+- 修复：webui/dashboard 方向门槛与引擎口径对齐（`_eff_threshold` 已含库存+funding，去重复 inv_add）；webui venues 卡片新增 funding 列
 - Web 状态面板（方案 B，dev 分支）：引擎内嵌 aiohttp HTTP 服务，`GET /` 单文件 HTML（深色卡片、premium canvas 折线、1s 轮询、状态徽章/双所/信号/会话/最近成交），`GET /api/status` JSON（`webui.status_payload` 无网络可测）；配置节 `web_dashboard`（enabled/host/port，默认 127.0.0.1:8787）；绑定失败仅告警不中断交易
 - Server酱告警通道：notifier 重构为多通道（TelegramChannel + ServerChanChannel），`SERVERCHAN_SENDKEY` 一行配置即用，与 Telegram 并存，队列/重试/丢弃行为不变
 - 兜底强平单使用最宽滑点（review4 P0）：新增 `hedge_force_close_slip_bps`（默认 200）；此前 `_hedge_once(0.0)` 零滑点保护价钉死盘口最优价，恰是全流程最不易成交的一单

@@ -60,10 +60,74 @@ def load_rows(path: str, hours: float, min_samples: int) -> list:
     return rows
 
 
+def _f(x, default=None):
+    """Float-parse a CSV cell, returning default for empty/absent values."""
+    try:
+        return float(x) if x not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def analyze_trades(path: str) -> None:
+    """Distribution of per-leg latency, realized slippage and signal age from
+    trades.csv (columns added by the P1 telemetry). Old files without the new
+    columns are handled gracefully (missing cells skipped)."""
+    rows = []
+    with open(path, newline="") as fh:
+        for r in csv.DictReader(fh):
+            rows.append(r)
+    if not rows:
+        print(f"\n{path}: no rows / 无成交记录", file=sys.stderr)
+        return
+    print(f"\n=== {path}: {len(rows)} executions ===\n")
+
+    lat_b = sorted(x for x in (_f(r.get("buy_lat_ms")) for r in rows)
+                   if x is not None)
+    lat_s = sorted(x for x in (_f(r.get("sell_lat_ms")) for r in rows)
+                   if x is not None)
+    slip_b = sorted(x for x in (_f(r.get("slip_buy_bps")) for r in rows)
+                    if x is not None)
+    slip_s = sorted(x for x in (_f(r.get("slip_sell_bps")) for r in rows)
+                    if x is not None)
+    ages = sorted(x for x in (_f(r.get("signal_age_sec")) for r in rows)
+                  if x is not None)
+    gap = sorted(x for x in ((_f(r.get("exp_edge_usd"))
+                              - _f(r.get("fill_edge_usd"))) for r in rows)
+                 if x is not None and abs(x) < 1e6)
+
+    def dist(name: str, vals: list, unit: str = "") -> None:
+        if not vals:
+            print(f"  {name}: no data / 无数据")
+            return
+        print(f"  {name}: p50 {pctl(vals, 50):.2f}{unit}   "
+              f"p90 {pctl(vals, 90):.2f}{unit}   "
+              f"p99 {pctl(vals, 99):.2f}{unit}   "
+              f"(n={len(vals)})")
+
+    dist("buy  leg latency (ms)", lat_b)
+    dist("sell leg latency (ms)", lat_s)
+    dist("buy  leg realized slip (bps)", slip_b)
+    dist("sell leg realized slip (bps)", slip_s)
+    dist("signal age (sec)", ages)
+    if gap:
+        mean_gap = sum(gap) / len(gap)
+        print(f"  exp−fill edge gap ($): mean {mean_gap:.4f}   "
+              f"p75 {pctl(gap, 75):.4f}   (n={len(gap)})")
+        print(f"    -> slippage tax per trade; watch it against "
+              f"leg_slippage_bps / 每笔滑点税，与 leg_slippage_bps 对照")
+    print()
+    print("  latency feeds venue choice & VPS region; slip feeds "
+          "leg_slippage_bps; age feeds premium_persist_sec. "
+          "/ 延迟决定机房选址，滑点决定保护价，信号年龄决定持续性闸门。")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="suggest thresholds from recorded "
                                             "minute data")
     p.add_argument("--csv", default="logs/minutes.csv")
+    p.add_argument("--trades", default=None,
+                   help="also analyze execution telemetry from trades.csv "
+                        "(latency/slippage/signal age)")
     p.add_argument("--hours", type=float, default=0.0,
                    help="only use the last N hours (0 = all data)")
     p.add_argument("--min-samples", type=int, default=10,
@@ -74,6 +138,13 @@ def main() -> None:
                         "is subtracted before counting firings (default 0.0 — "
                         "pass ~1.0 with a tradexyz hedge)")
     args = p.parse_args()
+
+    if args.trades:
+        try:
+            analyze_trades(args.trades)
+        except FileNotFoundError:
+            print(f"{args.trades} not found / 未找到成交文件",
+                  file=sys.stderr)
 
     try:
         rows = load_rows(args.csv, args.hours, args.min_samples)

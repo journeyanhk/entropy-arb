@@ -121,6 +121,7 @@ def test_phase1_defaults():
     assert cfg.hedge_retry_interval_sec == 0.5
     assert cfg.hedge_force_close_timeout_sec == 5.0
     assert cfg.hedge_force_close_slip_bps == 200.0
+    assert cfg.funding_cap_bps == 5.0
 
 
 def test_risk_config_overrides():
@@ -136,6 +137,7 @@ execution:
   hedge_retry_interval_sec: 0.2
   hedge_force_close_timeout_sec: 3.0
   hedge_force_close_slip_bps: 300.0
+  funding_cap_bps: 8.0
 """)
     assert cfg.risk_loop_sec == 15.0
     assert cfg.liquidation_distance_pct == 5.0
@@ -147,6 +149,7 @@ execution:
     assert cfg.hedge_retry_interval_sec == 0.2
     assert cfg.hedge_force_close_timeout_sec == 3.0
     assert cfg.hedge_force_close_slip_bps == 300.0
+    assert cfg.funding_cap_bps == 8.0
 
 
 def test_web_dashboard_defaults():
@@ -196,6 +199,8 @@ def test_risk_config_validation():
                  "hedge_retry_slips_bps")
     expect_error(MINIMAL + "\nexecution:\n  hedge_force_close_slip_bps: 0\n",
                  "hedge_force_close_slip_bps")
+    expect_error(MINIMAL + "\nexecution:\n  funding_cap_bps: -1\n",
+                 "funding_cap_bps")
 
 
 def test_example_config_phase1_values():

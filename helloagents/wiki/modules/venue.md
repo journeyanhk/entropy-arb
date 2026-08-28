@@ -32,6 +32,13 @@
 #### 场景: 循环叠加拉取
 - 预期结果: 3 s 内重复读复用缓存；force 对账强制新鲜读
 
+### 需求: funding 取数（P1-3）
+**模块:** venue_hl / venue_lighter
+`fetch_funding()` 刷新 `funding_bps_8h`：HL `metaAndAssetCtxs`（带 dex 参数，funding 字段 per-8h 分数 ×1e4）；Lighter `GET /api/v1/funding-rates`（按 market_id 匹配，rate 同口径 ×1e4）。正=多头支付。
+
+#### 场景: 余额轮询周期刷新
+- 预期结果: 30s 一次，失败仅告警不影响交易
+
 ## API接口
 - `LighterVenue._query_order(coi) -> Optional[dict]` REST 查单
 - `HLVenue.fetch_risk() / LighterVenue.fetch_risk()` 强平距离数据

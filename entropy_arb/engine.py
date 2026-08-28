@@ -39,7 +39,9 @@ CSV_HEADER = ["ts", "direction", "buy_venue", "sell_venue", "qty",
               "buy_limit", "sell_limit", "buy_notional", "sell_notional",
               "exp_edge_usd", "gross_edge_usd", "marginal_premium_bps",
               "midline_bps", "inv_add_bps", "ok", "buy_fill", "sell_fill",
-              "buy_status", "sell_status", "fill_edge_usd"]
+              "buy_status", "sell_status", "fill_edge_usd",
+              "buy_lat_ms", "sell_lat_ms", "slip_buy_bps", "slip_sell_bps",
+              "signal_age_sec"]
 BALANCE_POLL_SEC = 30.0
 FORCE_RECONCILE_GRACE_SEC = 3.0
 
@@ -291,12 +293,41 @@ class Engine:
         """Net hurdle (bps, on top of fees) for the direction buy->sell.
 
         selling entropy: executable premium must clear midline + upper;
-        buying entropy: the reverse premium must clear lower - midline."""
+        buying entropy: the reverse premium must clear lower - midline.
+
+        Funding cost (P1-3) is folded into the hurdle for OPENING directions
+        only — a reducing trade is never priced out by funding."""
         if sell.key == "entropy":
             base = self.cfg.midline_bps + self.cfg.upper_bps
         else:
             base = self.cfg.lower_bps - self.cfg.midline_bps
-        return base + self._inv_add_bps(buy, sell)
+        hurdle = base + self._inv_add_bps(buy, sell)
+        if not self._direction_reduces(buy, sell):
+            fund = self._funding_cost_bps(buy, sell)
+            hurdle += min(fund * 0.5, self.cfg.funding_cap_bps)
+        return hurdle
+
+    def _direction_reduces(self, buy, sell) -> bool:
+        """True when this direction reduces the existing pair inventory
+        (closing an entropy or hedge position toward zero)."""
+        if sell.key == "entropy":
+            return self.entropy.position > 0 or self.hedge.position < 0
+        return self.entropy.position < 0 or self.hedge.position > 0
+
+    def _funding_cost_bps(self, buy, sell) -> float:
+        """Per-8h funding cost in bps of holding this direction's structure
+        (long the buy leg, short the sell leg). Positive funding = longs pay
+        shorts. Only the adverse side counts; unknown rates contribute 0."""
+        cost = 0.0
+        for v, is_long in ((buy, True), (sell, False)):
+            f = getattr(v, "funding_bps_8h", None)
+            if f is None:
+                continue
+            if is_long and f > 0:
+                cost += f
+            elif not is_long and f < 0:
+                cost += -f
+        return cost
 
     def _headroom(self, buy, sell, ref_px: float) -> float:
         hb = buy.cap_usd - buy.position * ref_px
@@ -420,18 +451,22 @@ class Engine:
                                       cfg.data_staleness_sec)
                     and sell.book.is_fresh(cfg.staleness_sec,
                                            cfg.data_staleness_sec)):
+                self._armed[dkey] = None  # world untrustworthy: re-arm fresh
                 continue
             if not (buy.ready_to_trade() and sell.ready_to_trade()):
+                self._armed[dkey] = None  # settlement channel down: re-arm
                 continue
             if self._venue_down:
+                self._armed[dkey] = None  # outage: re-arm on recovery
                 continue  # a venue in outage pauses the (only) pair
             if self._vlock(buy.key).locked() or self._vlock(sell.key).locked():
-                continue  # mid-execution or mid-reconcile
+                continue  # mid-execution or mid-reconcile: signal real, keep
             if self._venue_limited(buy) or self._venue_limited(sell):
+                self._armed[dkey] = None  # excluded: re-arm when un-fused
                 continue  # reactive 429 exclusion / unresolved fuse
             if not (self._venue_rate_ok(buy) and self._venue_rate_ok(sell)):
                 self._skiplog("%s deferred: venue order budget exhausted", dkey)
-                continue
+                continue  # signal real, just throttled: keep armed
             # never refire into books that predate the venue's own last trade
             if (buy.book.last_update_ts <= buy.last_traded_ts
                     or sell.book.last_update_ts <= sell.last_traded_ts):
@@ -518,9 +553,20 @@ class Engine:
         sell_bound = sell.px_round(plan.sell_limit * (1 - slip), round_up=True)
         self._record_send(buy)
         self._record_send(sell)
+        signal_age = time.time() - (self._armed.get(direction) or time.time())
+
+        async def _timed(coro):
+            t0 = time.perf_counter()
+            r = await coro
+            if isinstance(r, dict):
+                r["latency_ms"] = (time.perf_counter() - t0) * 1e3
+            return r
+
         res = await asyncio.gather(
-            buy.send_taker(is_buy=True, qty=plan.qty, limit_px=buy_bound),
-            sell.send_taker(is_buy=False, qty=plan.qty, limit_px=sell_bound),
+            _timed(buy.send_taker(is_buy=True, qty=plan.qty,
+                                  limit_px=buy_bound)),
+            _timed(sell.send_taker(is_buy=False, qty=plan.qty,
+                                   limit_px=sell_bound)),
             return_exceptions=True)
         binfo, sinfo = (r if isinstance(r, dict) else
                         {"status": "send-failed", "filled_base": 0.0,
@@ -590,11 +636,20 @@ class Engine:
         if sent_ok:
             self.trades += 1
             self.total_exp_edge += plan.exp_edge_usd
+        # per-leg realized slippage vs the plan's walk-depth limits — only
+        # when the exchange reported an avg_px (never backfill: that would
+        # pollute the calibration sample)
+        slip_buy_bps = ((binfo["avg_px"] / plan.buy_limit - 1.0) * 1e4
+                        if binfo.get("avg_px") else None)
+        slip_sell_bps = ((1.0 - sinfo["avg_px"] / plan.sell_limit) * 1e4
+                         if sinfo.get("avg_px") else None)
         self._record_trade(direction, plan,
                            None if unresolved else fill_edge,
                            f"{binfo['status']}/{sinfo['status']}", sent_ok)
         self._log_csv(direction, buy, sell, plan, sent_ok, bfill, sfill,
-                      binfo["status"], sinfo["status"], fill_edge, inv_bps)
+                      binfo["status"], sinfo["status"], fill_edge, inv_bps,
+                      binfo.get("latency_ms"), sinfo.get("latency_ms"),
+                      slip_buy_bps, slip_sell_bps, signal_age)
         self.last_trade_ts = time.time()
         return bool(unresolved)
 
@@ -1103,6 +1158,13 @@ class Engine:
                     raise
                 except Exception as e:
                     log.debug("[%s] equity poll failed: %r", v.name, e)
+                # funding follows the same slow cadence (P1-3 gate input)
+                try:
+                    await v.fetch_funding()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.debug("[%s] funding poll failed: %r", v.name, e)
             try:
                 await asyncio.wait_for(self.stop.wait(), timeout=BALANCE_POLL_SEC)
             except asyncio.TimeoutError:
@@ -1215,7 +1277,9 @@ class Engine:
                      " *** HALTED ***" if self.halted else "")
 
     def _log_csv(self, direction, buy, sell, plan: ArbPlan, ok: bool, bfill,
-                 sfill, bstatus, sstatus, fill_edge, inv_bps) -> None:
+                 sfill, bstatus, sstatus, fill_edge, inv_bps,
+                 buy_lat_ms=None, sell_lat_ms=None, slip_buy_bps=None,
+                 slip_sell_bps=None, signal_age=None) -> None:
         try:
             path = self.cfg.trades_csv
             d = os.path.dirname(path)
@@ -1226,6 +1290,10 @@ class Engine:
                     if fh0.readline().strip() != ",".join(CSV_HEADER):
                         os.replace(path, path + ".old")
             new = not os.path.exists(path)
+
+            def cell(x, fmt=".3f"):
+                return "" if x is None else f"{x:{fmt}}"
+
             with open(path, "a", newline="") as fh:
                 w = csv.writer(fh)
                 if new:
@@ -1238,6 +1306,9 @@ class Engine:
                             f"{plan.marginal_premium_bps:.3f}",
                             f"{self.cfg.midline_bps:.3f}",
                             f"{inv_bps:.3f}", int(ok), f"{bfill:.8g}",
-                            f"{sfill:.8g}", bstatus, sstatus, f"{fill_edge:.4f}"])
+                            f"{sfill:.8g}", bstatus, sstatus, f"{fill_edge:.4f}",
+                            cell(buy_lat_ms), cell(sell_lat_ms),
+                            cell(slip_buy_bps), cell(slip_sell_bps),
+                            cell(signal_age)])
         except Exception:
             log.exception("csv write failed")

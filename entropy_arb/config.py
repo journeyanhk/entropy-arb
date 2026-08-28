@@ -139,6 +139,7 @@ class Config:
     liquidation_distance_pct: float
     margin_reserve_factor: float
     margin_leverage: float
+    funding_cap_bps: float
     # recorder
     recorder_enabled: bool
     recorder_csv: str
@@ -223,6 +224,7 @@ _SCHEMA: Dict[str, Any] = {
         "liquidation_distance_pct": float,
         "margin_reserve_factor": float,
         "margin_leverage": float,
+        "funding_cap_bps": float,
     },
     "recorder": {
         "enabled": bool,
@@ -404,6 +406,10 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
     if force_slip <= 0:
         raise ConfigError("execution.hedge_force_close_slip_bps must be > 0 "
                           "/ 强平滑点必须为正")
+    funding_cap = float(_get(raw, "execution", "funding_cap_bps", 5.0))
+    if funding_cap < 0:
+        raise ConfigError("execution.funding_cap_bps must be >= 0 / "
+                          "funding 门槛上限不能为负")
 
     web_enabled = bool(_get(raw, "web_dashboard", "enabled", True))
     web_host = str(_get(raw, "web_dashboard", "host", "127.0.0.1"))
@@ -455,6 +461,7 @@ def load_config(config_file: str = "config.yaml", env_file: str = ".env", *,
         liquidation_distance_pct=liq_pct,
         margin_reserve_factor=margin_factor,
         margin_leverage=margin_lev,
+        funding_cap_bps=funding_cap,
         recorder_enabled=bool(_get(raw, "recorder", "enabled", True)),
         recorder_csv=_get(raw, "recorder", "csv", "logs/minutes.csv"),
         log_level=str(_get(raw, "logging", "level", "INFO")).upper(),

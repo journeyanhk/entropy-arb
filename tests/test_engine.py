@@ -560,6 +560,110 @@ def test_log_placeholders_match_args():
                     f"{fmt[:70]}")
 
 
+def test_armed_reset_when_book_goes_stale():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    now = __import__("time").time()
+
+    def scan(t):
+        async def go():
+            return eng._scan(t)
+        asyncio.run(go())
+
+    scan(now)                              # arms sell_entropy
+    assert eng._armed["sell_entropy"] is not None
+    eng.entropy.book.ready = False         # book dies mid-armed
+    scan(now + 5.0)
+    assert eng._armed["sell_entropy"] is None   # re-armed on recovery
+    eng.entropy.set_book(100.14, 100.16)
+    scan(now + 6.0)                        # fresh book: re-arm, not fire
+    assert eng._armed["sell_entropy"] is not None
+    # (premium_persist_sec is 0 in the test config, so the re-armed pass
+    # fires on the NEXT scan — the reset itself is the key assertion)
+
+
+def test_armed_kept_when_venue_locked_or_throttled():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    now = __import__("time").time()
+
+    def scan(t):
+        async def go():
+            return eng._scan(t)
+        asyncio.run(go())
+
+    scan(now)
+    assert eng._armed["sell_entropy"] is not None
+    # budget exhausted: keep armed (signal real, just throttled)
+    eng._sends.setdefault("entropy", __import__("collections").deque())
+    for _ in range(100):
+        eng._sends["entropy"].append(now)
+    scan(now + 5.0)
+    assert eng._armed["sell_entropy"] is not None
+
+
+def test_funding_gate_only_for_opening_directions():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    e, h = eng.entropy, eng.hedge
+    e.funding_bps_8h, h.funding_bps_8h = -3.0, 2.0
+    # flat: both directions are OPENING -> funding cost counts.
+    # sell_entropy = short entropy (funding -3: shorts pay 3) + long hedge
+    # (funding +2: longs pay 2) -> adverse cost 5 -> +min(2.5, cap)
+    approx(eng._funding_cost_bps(buy=h, sell=e), 5.0)
+    approx(eng._eff_threshold(buy=h, sell=e), 9.0 + 2.5)
+    # buy_entropy = long entropy (funding -3: longs RECEIVE) + short hedge
+    # (funding +2: shorts RECEIVE) -> no adverse side -> cost 0
+    approx(eng._funding_cost_bps(buy=e, sell=h), 0.0)
+    approx(eng._eff_threshold(buy=e, sell=h), -2.0)
+    # with inventory this direction reduces, funding is NOT gated
+    e.position = 10.0   # long entropy: sell_entropy reduces -> no gate
+    h.position = -10.0
+    approx(eng._eff_threshold(buy=h, sell=e), 9.0)
+
+
+def test_funding_gate_capped_and_missing_rates_ignored():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    e, h = eng.entropy, eng.hedge
+    e.funding_bps_8h, h.funding_bps_8h = -100.0, 0.0
+    eng.cfg.funding_cap_bps = 5.0
+    # raw cost 100 * 0.5 = 50, capped at 5
+    approx(eng._eff_threshold(buy=h, sell=e), 9.0 + 5.0)
+    # unknown rates contribute nothing
+    e.funding_bps_8h, h.funding_bps_8h = None, None
+    approx(eng._funding_cost_bps(buy=h, sell=e), 0.0)
+    approx(eng._eff_threshold(buy=h, sell=e), 9.0)
+
+
+def test_trades_csv_row_width_matches_header():
+    eng = make_engine(midline=5.0, upper=4.0, lower=3.0)
+    path = os.path.join(tempfile.mkdtemp(), "trades.csv")
+    eng.cfg.trades_csv = path
+    eng.entropy.set_book(100.14, 100.16)
+    eng.hedge.set_book(99.99, 100.01)
+    plan, reason = eng._plan(eng.hedge, eng.entropy, 500.0)
+    assert reason == "ok"
+    from entropy_arb.engine import CSV_HEADER
+    eng._log_csv("sell_entropy", eng.hedge, eng.entropy, plan, True,
+                 0.5, 0.5, "filled", "filled", 0.5, 1.0,
+                 12.3, 45.6, 2.1, 1.5, 0.8)
+    with open(path, newline="") as fh:
+        import csv as _csv
+        rows = list(_csv.reader(fh))
+    assert rows[0] == CSV_HEADER
+    assert len(rows[1]) == len(CSV_HEADER)
+    # missing telemetry cells stay empty (no "None" pollution)
+    path2 = os.path.join(tempfile.mkdtemp(), "trades2.csv")
+    eng.cfg.trades_csv = path2
+    eng._log_csv("buy_entropy", eng.entropy, eng.hedge, plan, True,
+                 0.5, 0.5, "filled", "filled", 0.5, 1.0)
+    with open(path2, newline="") as fh:
+        rows2 = list(_csv.reader(fh))
+    assert len(rows2[1]) == len(CSV_HEADER)
+    assert rows2[1][-5:] == ["", "", "", "", ""]
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
