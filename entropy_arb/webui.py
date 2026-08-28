@@ -16,43 +16,115 @@ import time
 from typing import Any, Dict, List, Optional
 
 PAGE_HTML = """<!DOCTYPE html>
-<html lang="zh">
+<html lang="zh" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
 <title>entropy-arb · 实时面板</title>
 <style>
   :root { color-scheme: dark; }
+  :root[data-theme="light"] { color-scheme: light; }
+
+  /* --- 主题变量：极简扁平双主题 --- */
+  :root {
+    --bg: #0f1115; --card: #171a21; --line: #23272f;
+    --text: #d7dce3; --dim: #8a919c; --accent: #4f8cff;
+    --pos: #3fb950; --neg: #f85149; --warn: #d29922;
+    --badge-run: #2ea043; --badge-stop: #da3633; --badge-warn-bg: #d29922;
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f9; --card: #ffffff; --line: #e4e7ec;
+    --text: #1f2328; --dim: #6a737d; --accent: #2563eb;
+    --pos: #1a7f37; --neg: #d1242f; --warn: #9a6700;
+    --badge-run: #1a7f37; --badge-stop: #d1242f; --badge-warn-bg: #d4a72c;
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background:#0d1117; color:#c9d1d9; font:13px/1.5 -apple-system,
-         "PingFang SC", "Microsoft YaHei", monospace; padding:12px; }
-  h1 { font-size:15px; font-weight:600; }
-  .top { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
-         margin-bottom:12px; }
-  .badge { padding:2px 10px; border-radius:4px; font-weight:600; }
-  .b-run { background:#1a7f37; color:#fff; }
-  .b-rec { background:#9e6a03; color:#fff; }
-  .b-stop { background:#b62324; color:#fff; }
-  .b-drift { background:#d29922; color:#000; }
-  .b-stale { background:#9e6a03; color:#fff; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
-          gap:12px; }
-  .card { background:#161b22; border:1px solid #30363d; border-radius:8px;
-          padding:12px; }
-  .card h2 { font-size:12px; color:#8b949e; text-transform:uppercase;
-             margin-bottom:8px; letter-spacing:.5px; }
-  table { width:100%; border-collapse:collapse; }
-  td,th { padding:3px 6px; text-align:right; font-variant-numeric:tabular-nums; }
-  th { color:#8b949e; font-weight:400; }
-  td:first-child, th:first-child { text-align:left; }
-  .pos { color:#3fb950; } .neg { color:#f85149; }
-  .dim { color:#8b949e; }
-  canvas { width:100%; height:120px; display:block; }
-  .ok { color:#3fb950; } .err { color:#f85149; }
-  .trades td { font-size:12px; }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%;
-         margin-right:6px; }
-  .d-on { background:#3fb950; } .d-off { background:#30363d; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 13px/1.55 -apple-system, "PingFang SC", "Microsoft YaHei",
+         "Segoe UI", system-ui, sans-serif;
+    padding: 14px; min-width: 0;
+  }
+  h1 { font-size: 15px; font-weight: 600; letter-spacing: .2px; }
+  .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+         margin-bottom: 14px; }
+  .top .spacer { flex: 1; }
+  #clock { font-variant-numeric: tabular-nums; }
+
+  .badge { padding: 3px 10px; border-radius: 6px; font-weight: 600;
+           font-size: 12px; white-space: nowrap; }
+  .b-run  { background: var(--badge-run);  color: #fff; }
+  .b-rec  { background: var(--warn);       color: #fff; }
+  .b-stop { background: var(--badge-stop); color: #fff; }
+  .b-drift{ background: var(--badge-warn-bg); color: #1f2328; }
+  .b-stale{ background: var(--warn);       color: #fff; }
+
+  button { font: inherit; cursor: pointer; }
+  #themeBtn {
+    background: var(--card); color: var(--dim); border: 1px solid var(--line);
+    border-radius: 8px; padding: 5px 12px; font-size: 13px;
+    transition: color .15s;
+  }
+  #themeBtn:hover { color: var(--accent); border-color: var(--accent); }
+
+  .grid { display: grid; gap: 12px; min-width: 0;
+          grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: 10px; padding: 12px 14px; min-width: 0;
+          overflow: hidden; }
+  .card h2 { font-size: 11px; color: var(--dim); text-transform: uppercase;
+             letter-spacing: .8px; margin-bottom: 10px; font-weight: 600; }
+  .card .body { min-width: 0; }
+
+  /* 表：卡片内横向滚动，永不截断/顶破边框 */
+  .tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch;
+              margin: 0 -4px; padding: 0 4px; }
+  table { border-collapse: collapse; width: 100%; min-width: 100%; }
+  td, th { padding: 4px 8px; text-align: right; white-space: nowrap;
+           font-variant-numeric: tabular-nums; }
+  td:first-child, th:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: 500; font-size: 11px; }
+  td { font-size: 12.5px; }
+  tr + tr td { border-top: 1px solid var(--line); }
+  .tbl-wrap::-webkit-scrollbar { height: 6px; }
+  .tbl-wrap::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+
+  .pos { color: var(--pos); } .neg { color: var(--neg); }
+  .dim { color: var(--dim); }
+  .ok { color: var(--pos); } .err { color: var(--neg); }
+
+  .spark-wrap { min-width: 0; }
+  canvas { width: 100%; height: 110px; display: block; }
+
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+         margin-right: 6px; vertical-align: middle; }
+  .d-on { background: var(--pos); } .d-off { background: var(--line); }
+
+  .bd { display: block; font-size: 11px; color: var(--dim); margin-top: 2px;
+        font-variant-numeric: tabular-nums; }
+
+  .sigline { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+             margin-bottom: 8px; }
+  .sigline b { font-variant-numeric: tabular-nums; }
+  .kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+         gap: 2px 14px; min-width: 0; }
+  .kpi .row { display: flex; justify-content: space-between; gap: 8px;
+              padding: 3px 0; min-width: 0; }
+  .kpi .row span:first-child { color: var(--dim); }
+  .kpi .row span:last-child { font-variant-numeric: tabular-nums; }
+
+  /* 移动端：单列、触控友好 */
+  @media (max-width: 640px) {
+    body { padding: 10px; font-size: 12.5px; }
+    .grid { grid-template-columns: 1fr; }
+    td { font-size: 12px; padding: 5px 6px; }
+    .card { padding: 10px 12px; }
+    #themeBtn { padding: 6px 14px; }
+    .sigline { gap: 6px; }
+  }
 </style>
 </head>
 <body>
@@ -60,50 +132,70 @@ PAGE_HTML = """<!DOCTYPE html>
   <h1>entropy-arb <span class="dim" id="sym"></span></h1>
   <span class="badge" id="badge">连接中…</span>
   <span class="dim" id="uptime"></span>
+  <span class="spacer"></span>
   <span class="dim" id="clock"></span>
+  <button id="themeBtn" title="切换主题 / toggle theme">🌙</button>
 </div>
 <div class="grid">
   <div class="card"><h2>信号 · premium vs 带宽</h2>
-    <div>mid premium <b id="prem"></b> bps &nbsp;midline <b id="midline"></b>
-         &nbsp;band [<span id="band"></span>]</div>
-    <canvas id="spark"></canvas>
+    <div class="sigline">
+      <span>mid premium <b id="prem"></b> bps</span>
+      <span>midline <b id="midline"></b></span>
+      <span>band [<b id="band"></b>]</span>
+    </div>
+    <div class="spark-wrap"><canvas id="spark"></canvas></div>
   </div>
   <div class="card"><h2>方向门槛</h2>
-    <table id="dirs"></table>
+    <div class="tbl-wrap"><table id="dirs"></table></div>
   </div>
   <div class="card"><h2>交易所</h2>
-    <table id="venues"></table>
+    <div class="tbl-wrap"><table id="venues"></table></div>
   </div>
   <div class="card"><h2>会话</h2>
-    <table id="session"></table>
+    <div class="kpi" id="session"></div>
   </div>
-  <div class="card trades"><h2>最近成交</h2>
-    <table id="trades"><tr><td class="dim">暂无成交</td></tr></table>
+  <div class="card"><h2>最近成交</h2>
+    <div class="tbl-wrap"><table id="trades"><tr><td class="dim">暂无成交</td></tr></table></div>
   </div>
 </div>
 <script>
 const $ = id => document.getElementById(id);
 let hist = [];
-async function tick() {
-  try {
-    const s = await (await fetch('/api/status')).json();
-    render(s);
-  } catch (e) {
-    $('badge').textContent = '连接断开';
-    $('badge').className = 'badge b-stop';
-  }
+
+/* --- 主题：跟随系统 + 手动切换持久化 --- */
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  $('themeBtn').textContent = t === 'dark' ? '🌙' : '☀️';
+  try { localStorage.setItem('ea-theme', t); } catch (e) {}
+}
+function initTheme() {
+  let t = null;
+  try { t = localStorage.getItem('ea-theme'); } catch (e) {}
+  if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  setTheme(t);
+}
+$('themeBtn').addEventListener('click', () => {
+  setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+});
+
+function fmt(x, d = 4) {
+  return x === null || x === undefined ? '—' : Number(x).toFixed(d);
+}
+function usd(x, d = 4) {
+  if (x === null || x === undefined) return '—';
+  const s = Math.abs(x).toLocaleString('en-US', {minimumFractionDigits: d,
+                                                 maximumFractionDigits: d});
+  return (x < 0 ? '-' : '') + '$' + s;
 }
 function badge(s) {
   const b = $('badge');
-  if (s.halted) { b.textContent = 'HALTED'; b.className = 'badge b-stop'; }
+  if (s.halted)       { b.textContent = 'HALTED';    b.className = 'badge b-stop'; }
   else if (s.drift_halted) { b.textContent = 'DRIFT'; b.className = 'badge b-drift'; }
-  else if (s.venue_down) { b.textContent = 'VENUE DOWN'; b.className = 'badge b-stop'; }
-  else if (s.stale) { b.textContent = 'STALE'; b.className = 'badge b-stale'; }
+  else if (s.venue_down.length) { b.textContent = 'VENUE DOWN'; b.className = 'badge b-stop'; }
+  else if (s.stale)   { b.textContent = 'STALE';     b.className = 'badge b-stale'; }
   else if (s.record_only) { b.textContent = 'RECORD-ONLY'; b.className = 'badge b-rec'; }
-  else { b.textContent = 'RUNNING'; b.className = 'badge b-run'; }
+  else                { b.textContent = 'RUNNING';   b.className = 'badge b-run'; }
 }
-function fmt(x, d=4) { return x === null || x === undefined ? '—' : Number(x).toFixed(d); }
-function usd(x, d=4) { return x === null || x === undefined ? '—' : (x < 0 ? '-' : '') + '$' + Math.abs(x).toFixed(d); }
 function render(s) {
   $('sym').textContent = s.symbol + ' × ' + s.hedge_name;
   badge(s);
@@ -112,85 +204,115 @@ function render(s) {
   $('prem').textContent = fmt(s.premium_bps, 2);
   $('midline').textContent = fmt(s.midline_bps, 2);
   $('band').textContent = fmt(s.band_low, 2) + ' … ' + fmt(s.band_high, 2);
+
   hist = (s.premium_history || []).slice(-300);
   drawSpark(hist.map(p => p[1]));
+
   const dr = $('dirs'); dr.innerHTML = '';
   for (const d of s.directions) {
     const gap = d.premium - d.hurdle;
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${d.label}</td><td>${fmt(d.premium,2)}</td>` +
-      `<td>${fmt(d.hurdle,2)}</td><td class="${gap>=0?'ok':'dim'}">${fmt(gap,2)}</td>` +
-      `<td><span class="dot ${d.armed?'d-on':'d-off'}"></span></td>`;
+    const bd = d.hurdle_breakdown || null;
+    let bdHtml = '';
+    if (bd) {
+      const parts = ['base ' + fmt(bd.base, 2),
+                     'inv ' + fmt(bd.inventory, 2),
+                     'fund ' + fmt(bd.funding, 2),
+                     'slip ' + fmt(bd.slip_gate, 2)];
+      bdHtml = '<span class="bd">' + parts.join(' + ') + '</span>';
+    }
+    tr.innerHTML = `<td>${d.label}${bdHtml}</td>
+      <td>${fmt(d.premium, 2)}</td>
+      <td>${fmt(d.hurdle, 2)}</td>
+      <td class="${gap >= 0 ? 'ok' : 'dim'}">${fmt(gap, 2)}</td>
+      <td><span class="dot ${d.armed ? 'd-on' : 'd-off'}"></span></td>`;
     dr.appendChild(tr);
   }
-const v = $('venues'); v.innerHTML =
+
+  const v = $('venues'); v.innerHTML =
     '<tr><th>所</th><th>bid/ask</th><th>spread</th><th>age</th>' +
     '<th>position</th><th>equity</th><th>free</th><th>fund/h</th><th>miss%</th></tr>';
   for (const x of s.venues) {
     const tr = document.createElement('tr');
-    const flags = (x.down?' DOWN':'') + (x.limited?' LTD':'') +
-                  (x.unresolved?' UNRES':'') + (x.stale?' STALE':'');
-    tr.innerHTML = `<td>${x.name}${flags}</td>` +
-      `<td>${x.bid??'—'}/${x.ask??'—'}</td><td>${fmt(x.spread_bps,1)}</td>` +
-      `<td>${fmt(x.data_age,1)}s</td>` +
-      `<td class="${x.position>0?'pos':x.position<0?'neg':'dim'}">${fmt(x.position,6)}</td>` +
-      `<td>${usd(x.equity,2)}</td><td>${usd(x.free,2)}</td>` +
-      `<td>${x.funding_bps_h===null?'—':fmt(x.funding_bps_h,2)}</td>` +
-      `<td>${x.miss_rate===null?'—':(x.miss_rate*100).toFixed(1)}</td>`;
+    const flags = (x.down ? ' DOWN' : '') + (x.limited ? ' LTD' : '') +
+                  (x.unresolved ? ' UNRES' : '') + (x.stale ? ' STALE' : '');
+    tr.innerHTML = `<td>${x.name}${flags}</td>
+      <td>${x.bid ?? '—'}/${x.ask ?? '—'}</td>
+      <td>${fmt(x.spread_bps, 1)}</td>
+      <td>${fmt(x.data_age, 1)}s</td>
+      <td class="${x.position > 0 ? 'pos' : x.position < 0 ? 'neg' : 'dim'}">${fmt(x.position, 6)}</td>
+      <td>${usd(x.equity, 2)}</td><td>${usd(x.free, 2)}</td>
+      <td>${x.funding_bps_h === null ? '—' : fmt(x.funding_bps_h, 2)}</td>
+      <td>${x.miss_rate === null ? '—' : (x.miss_rate * 100).toFixed(1)}</td>`;
     v.appendChild(tr);
   }
+
   const se = $('session'); se.innerHTML = '';
   const rows = [
-    ['PnL (MTM)', usd(s.mtm_pnl), s.mtm_pnl>0?'pos':s.mtm_pnl<0?'neg':''],
-    ['账户权益变动', usd(s.account_delta), s.account_delta>0?'pos':s.account_delta<0?'neg':''],
-    ['Σ 权益', usd(s.total_equity,2), ''],
+    ['PnL (MTM)', usd(s.mtm_pnl), s.mtm_pnl > 0 ? 'pos' : s.mtm_pnl < 0 ? 'neg' : ''],
+    ['账户权益变动', usd(s.account_delta), s.account_delta > 0 ? 'pos' : s.account_delta < 0 ? 'neg' : ''],
+    ['Σ 权益', usd(s.total_equity, 2), ''],
     ['Σ 预期收益', usd(s.exp_edge), ''],
     ['Σ 实际收益', usd(s.fill_edge), ''],
     ['执行 / 对冲', s.trades + ' / ' + s.hedges, ''],
-    ['净敞口', fmt(s.net_delta,6), Math.abs(s.net_delta)>0.003?'err':''],
-    ['连续错误', s.consec_errors, s.consec_errors?'err':''],
+    ['净敞口', fmt(s.net_delta, 6), Math.abs(s.net_delta) > 0.003 ? 'err' : ''],
+    ['连续错误', s.consec_errors, s.consec_errors ? 'err' : ''],
     ['分钟数据行', s.recorder_rows, ''],
-    ['上次执行', s.last_trade_ago===null?'—':fmt(s.last_trade_ago,0)+'s 前', ''],
+    ['上次执行', s.last_trade_ago === null ? '—' : fmt(s.last_trade_ago, 0) + 's 前', ''],
   ];
-  for (const [k,v,cls] of rows) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${k}</td><td class="${cls}">${v}</td>`; se.appendChild(tr);
+  for (const [k, val, cls] of rows) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const l = document.createElement('span'); l.textContent = k;
+    const r = document.createElement('span'); r.textContent = val;
+    if (cls) r.className = cls;
+    row.appendChild(l); row.appendChild(r);
+    se.appendChild(row);
   }
+
   const t = $('trades'); t.innerHTML = '';
   if (!s.recent_trades.length) {
-    t.innerHTML = '<tr><td class="dim">暂无成交</td></tr>'; return;
+    t.innerHTML = '<tr><td class="dim">暂无成交</td></tr>';
+    return;
   }
   t.innerHTML = '<tr><th>时间</th><th>方向</th><th>数量</th><th>名义</th>' +
     '<th>溢价bps</th><th>预期$</th><th>实际$</th><th>状态</th></tr>';
   for (const r of s.recent_trades.slice().reverse()) {
     const tr = document.createElement('tr');
-    const ok = r.ok ? 'ok' : 'err';
-    tr.innerHTML = `<td>${new Date(r.ts*1000).toLocaleTimeString()}</td>` +
-      `<td>${r.direction}</td><td>${fmt(r.qty,6)}</td><td>${usd(r.notional,0)}</td>` +
-      `<td>${fmt(r.prem_bps,1)}</td><td>${usd(r.exp)}</td>` +
-      `<td class="${ok}">${r.fill===null?'—':usd(r.fill)}</td>` +
-      `<td class="${ok}">${r.status}</td>`;
+    const cls = r.ok ? 'ok' : 'err';
+    tr.innerHTML = `<td>${new Date(r.ts * 1000).toLocaleTimeString()}</td>
+      <td>${r.direction}</td><td>${fmt(r.qty, 6)}</td><td>${usd(r.notional, 0)}</td>
+      <td>${fmt(r.prem_bps, 1)}</td><td>${usd(r.exp)}</td>
+      <td class="${cls}">${r.fill === null ? '—' : usd(r.fill)}</td>
+      <td class="${cls}">${r.status}</td>`;
     t.appendChild(tr);
   }
 }
 function drawSpark(vals) {
   const c = $('spark'), ctx = c.getContext('2d');
-  c.width = c.clientWidth * devicePixelRatio;
-  c.height = 120 * devicePixelRatio;
-  ctx.clearRect(0, 0, c.width, c.height);
+  const w = c.clientWidth, h = c.clientHeight;
+  if (!w || !h) return;
+  c.width = w * devicePixelRatio;
+  c.height = h * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ctx.clearRect(0, 0, w, h);
   if (vals.length < 2) return;
-  const lo = Math.min(...vals), hi = Math.max(...vals), span = (hi-lo)||1;
-  const w = c.width, h = c.height, n = vals.length;
-  ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 2;
+  const lo = Math.min(...vals), hi = Math.max(...vals), span = (hi - lo) || 1;
+  const css = getComputedStyle(document.documentElement);
+  ctx.strokeStyle = css.getPropertyValue('--accent').trim();
+  ctx.lineWidth = 1.6;
   ctx.beginPath();
-  for (let i = 0; i < n; i++) {
-    const x = i/(n-1)*w, y = h - (vals[i]-lo)/span*(h-8) - 4;
-    i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+  for (let i = 0; i < vals.length; i++) {
+    const x = i / (vals.length - 1) * w;
+    const y = h - (vals[i] - lo) / span * (h - 8) - 4;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   }
   ctx.stroke();
-  ctx.fillStyle = '#8b949e'; ctx.font = '10px monospace';
-  ctx.fillText(lo.toFixed(2) + ' … ' + hi.toFixed(2) + ' bps', 6, h-4);
+  ctx.fillStyle = css.getPropertyValue('--dim').trim();
+  ctx.font = '10px monospace';
+  ctx.fillText(lo.toFixed(2) + ' … ' + hi.toFixed(2) + ' bps', 6, h - 4);
 }
+initTheme();
 setInterval(tick, 1000);
 tick();
 </script>

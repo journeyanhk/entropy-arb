@@ -7,6 +7,7 @@
 ## [Unreleased]
 
 ### 新增
+- Web 面板前端重构（dev-gen2）：极简扁平化双主题（暗/亮，跟随系统 + 手动切换持久化 localStorage）、表格卡内横向滚动（数据不再截断/顶破边框）、hurdle_breakdown 分解展示、金额千分位、H5 自适应（≤640px 单列 + 触控友好）
 - review6 修复（dev-gen2）：
   - miss 归因过滤：`_execute` observe 前剔除 `err`/`unresolved` 腿——miss 池只含"订单到达交易所、IOC 被保护价打空"的市场性事件，网络抖动不再劫持 miss_rate
   - samples 修剪：`observe` 内按时间窗 + `window_n×2` 数量上限裁剪（内存与状态文件有界）
